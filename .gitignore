@@ -1,0 +1,6 @@
+/target
+.env
+*.db
+*.db.backup
+.DS_Store
+seeds/*.local.json

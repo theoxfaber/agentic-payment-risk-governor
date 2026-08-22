@@ -1,0 +1,15 @@
+[package]
+name = "risk-graph"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

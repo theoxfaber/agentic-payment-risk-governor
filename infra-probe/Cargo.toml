@@ -1,0 +1,12 @@
+[package]
+name = "infra-probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-nats = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }

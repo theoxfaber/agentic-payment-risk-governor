@@ -1,0 +1,19 @@
+[package]
+name = "evaluation-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+action-service = { path = "../action-service" }
+policy-engine = { path = "../policy-engine" }
+risk-engine = { path = "../risk-engine" }
+evidence-service = { path = "../evidence-service" }
+audit-service = { path = "../audit-service" }
+razorpay-gateway = { path = "../razorpay-gateway" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }

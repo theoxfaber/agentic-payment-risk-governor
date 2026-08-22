@@ -1,0 +1,268 @@
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionType {
+    Refund,
+    Payout,
+    PaymentLink,
+    Transfer,
+    Capture,
+    Void,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionOutcome {
+    Allow,
+    Review,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyVerdict {
+    Allow,
+    Block,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentActionRequest {
+    pub agent_id: String,
+    pub merchant_id: String,
+    pub action_type: ActionType,
+    pub amount: i64,
+    pub currency: String,
+    pub declared_intent: String,
+    pub context: serde_json::Value,
+    pub timestamp: DateTime<Utc>,
+    pub correlation_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentHistory {
+    pub agent_id: String,
+    pub total_actions_30d: u32,
+    pub total_volume_30d: i64,
+    pub avg_amount: i64,
+    pub max_amount: i64,
+    pub refund_rate: f64,
+    pub block_rate: f64,
+    pub review_rate: f64,
+    pub first_seen: DateTime<Utc>,
+    pub last_action: DateTime<Utc>,
+    pub action_type_distribution: HashMap<ActionType, u32>,
+    pub anomaly_flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerchantPolicy {
+    pub merchant_id: String,
+    pub max_refund_amount: i64,
+    pub max_payout_amount: i64,
+    pub max_payment_link_amount: i64,
+    pub daily_refund_limit: i64,
+    pub daily_payout_limit: i64,
+    pub velocity_threshold_per_hour: u32,
+    pub allowed_countries: Vec<String>,
+    pub blocked_countries: Vec<String>,
+    pub require_approval_above: i64,
+    pub custom_rules: Vec<CustomRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomRule {
+    pub rule_id: String,
+    pub condition: String,
+    pub action: PolicyVerdict,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomerHistory {
+    pub customer_id: String,
+    pub total_transactions: u32,
+    pub total_volume: i64,
+    pub chargeback_count: u32,
+    pub refund_count: u32,
+    pub avg_ticket_size: i64,
+    pub first_transaction: DateTime<Utc>,
+    pub last_transaction: DateTime<Utc>,
+    pub risk_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VelocityStats {
+    pub actions_last_hour: u32,
+    pub volume_last_hour: i64,
+    pub actions_last_24h: u32,
+    pub volume_last_24h: i64,
+    pub unique_merchants_24h: u32,
+    pub unique_customers_24h: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Evidence {
+    pub agent_history: AgentHistory,
+    pub merchant_policy: MerchantPolicy,
+    pub customer_history: Option<CustomerHistory>,
+    pub recent_velocity: VelocityStats,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyResult {
+    pub verdict: PolicyVerdict,
+    pub matched_rules: Vec<String>,
+    pub violated_thresholds: Vec<String>,
+    pub evaluated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskFeatures {
+    pub amount_zscore: f64,
+    pub velocity_zscore: f64,
+    pub intent_mismatch_score: f64,
+    pub behavioral_drift_score: f64,
+    pub merchant_risk_score: f64,
+    pub agent_risk_score: f64,
+    pub customer_risk_score: f64,
+    pub time_since_last_action_hours: f64,
+    pub amount_vs_avg_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RiskResult {
+    pub risk_score: f64,
+    pub intent_mismatch_score: f64,
+    pub features: RiskFeatures,
+    pub model_version: String,
+    pub evaluated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Decision {
+    pub decision_id: Uuid,
+    pub action: AgentActionRequest,
+    pub policy_result: PolicyResult,
+    pub risk_result: RiskResult,
+    pub decision: DecisionOutcome,
+    pub model_version: String,
+    pub evidence_snapshot: Evidence,
+    pub created_at: DateTime<Utc>,
+    pub human_review: Option<HumanReview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanReview {
+    pub reviewer_id: String,
+    pub decision: DecisionOutcome,
+    pub notes: Option<String>,
+    pub reviewed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditRecord {
+    pub record_id: Uuid,
+    pub decision_id: Option<Uuid>,
+    pub event_type: AuditEventType,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditEventType {
+    ActionRequested,
+    PolicyEvaluated,
+    RiskScored,
+    GraphAnalyzed,
+    DecisionMade,
+    HumanReviewed,
+    RazorpayCalled,
+    WebhookReceived,
+    OutcomeRecorded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RazorpayWebhookPayload {
+    pub event: String,
+    pub payload: serde_json::Value,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplaySnapshot {
+    pub decision: Decision,
+    pub policy_version: String,
+    pub risk_model_version: String,
+    pub evidence_at_decision: Evidence,
+    pub audit_trail: Vec<AuditRecord>,
+}
+
+impl Default for VelocityStats {
+    fn default() -> Self {
+        Self {
+            actions_last_hour: 0,
+            volume_last_hour: 0,
+            actions_last_24h: 0,
+            volume_last_24h: 0,
+            unique_merchants_24h: 0,
+            unique_customers_24h: 0,
+        }
+    }
+}
+
+/// Wire format: what action-service sends to the policy-engine worker.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyEvaluateJob {
+    pub request: AgentActionRequest,
+    pub evidence: Evidence,
+}
+
+/// Reply payload for evidence.gather — distinguishes transport-degraded
+/// (handled by the caller as fail-safe) from application-level NotFound
+/// (fail closed with a real error).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EvidenceOutcome {
+    Ready(Evidence),
+    NotFound(String),
+}
+
+// ---------------------------------------------------------------------------
+// Investigation plane (consumed by the decision combiner)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvestigationVerdict {
+    /// Evidence supports the hypothesis → escalation justified.
+    Supported,
+    /// Real supporting AND real counter-evidence → human decides.
+    Conflicted,
+    /// Hypothesis not established.
+    Unsupported,
+}
+
+/// What the combiner needs from the investigation plane, plus enough context
+/// to explain itself in the audit trail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvestigationSummary {
+    pub verdict: InvestigationVerdict,
+    /// 0..1 — how much of the decision-relevant picture was observable.
+    pub evidence_confidence: f64,
+    pub support_signals: u32,
+    pub contradiction_count: u32,
+    pub estimated_exposure_paise: i64,
+}
+
+pub fn generate_correlation_id() -> Uuid {
+    Uuid::new_v4()
+}
+
+pub fn now_utc() -> DateTime<Utc> {
+    Utc::now()
+}

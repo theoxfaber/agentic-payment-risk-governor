@@ -1,0 +1,61 @@
+{
+  "agents": [
+    {
+      "agent_id": "agent-trusted-01",
+      "total_actions_30d": 30,
+      "total_volume_30d": 1500000,
+      "avg_amount": 50000,
+      "max_amount": 100000,
+      "refund_rate": 0.05,
+      "block_rate": 0.02,
+      "review_rate": 0.03,
+      "first_seen": "2026-05-23T00:00:00Z",
+      "last_action": "2026-08-21T18:00:00Z",
+      "action_type_distribution": {},
+      "anomaly_flags": []
+    },
+    {
+      "agent_id": "agent-1",
+      "total_actions_30d": 30,
+      "total_volume_30d": 1500000,
+      "avg_amount": 50000,
+      "max_amount": 100000,
+      "refund_rate": 0.05,
+      "block_rate": 0.02,
+      "review_rate": 0.03,
+      "first_seen": "2026-05-23T00:00:00Z",
+      "last_action": "2026-08-21T18:00:00Z",
+      "action_type_distribution": {},
+      "anomaly_flags": []
+    }
+  ],
+  "merchants": [
+    {
+      "merchant_id": "merchant-001",
+      "max_refund_amount": 500000,
+      "max_payout_amount": 1000000,
+      "max_payment_link_amount": 250000,
+      "daily_refund_limit": 2000000,
+      "daily_payout_limit": 5000000,
+      "velocity_threshold_per_hour": 10,
+      "allowed_countries": [],
+      "blocked_countries": [],
+      "require_approval_above": 100000,
+      "custom_rules": []
+    },
+    {
+      "merchant_id": "m-001",
+      "max_refund_amount": 500000,
+      "max_payout_amount": 1000000,
+      "max_payment_link_amount": 250000,
+      "daily_refund_limit": 2000000,
+      "daily_payout_limit": 5000000,
+      "velocity_threshold_per_hour": 10,
+      "allowed_countries": [],
+      "blocked_countries": [],
+      "require_approval_above": 100000,
+      "custom_rules": []
+    }
+  ],
+  "customers": []
+}

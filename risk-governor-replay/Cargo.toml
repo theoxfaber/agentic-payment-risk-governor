@@ -1,0 +1,12 @@
+[package]
+name = "risk-governor-replay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+audit-service = { path = "../audit-service" }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }

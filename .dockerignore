@@ -1,0 +1,6 @@
+target/
+.git/
+seeds/
+docs/
+*.md
+docker-compose.yml

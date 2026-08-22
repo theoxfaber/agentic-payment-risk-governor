@@ -1,0 +1,31 @@
+[package]
+name = "governor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+action-service = { path = "../action-service" }
+policy-engine = { path = "../policy-engine" }
+risk-engine = { path = "../risk-engine" }
+evidence-service = { path = "../evidence-service" }
+audit-service = { path = "../audit-service" }
+razorpay-gateway = { path = "../razorpay-gateway" }
+risk-governor-replay = { path = "../risk-governor-replay" }
+nats-link = { path = "../nats-link" }
+risk-governor-correlation = { path = "../risk-governor-correlation" }
+async-nats = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+risk-graph = { path = "../risk-graph" }
+investigation-engine = { path = "../investigation-engine" }
+
+[[bin]]
+name = "governor"
+path = "src/main.rs"

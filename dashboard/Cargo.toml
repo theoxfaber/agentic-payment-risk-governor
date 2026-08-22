@@ -1,0 +1,9 @@
+[package]
+name = "dashboard"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+audit-service = { path = "../audit-service" }
+risk-governor-replay = { path = "../risk-governor-replay" }

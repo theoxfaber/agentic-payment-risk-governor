@@ -1,0 +1,29 @@
+[package]
+name = "nats-link"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+action-service = { path = "../action-service" }
+policy-engine = { path = "../policy-engine" }
+evidence-service = { path = "../evidence-service" }
+risk-governor-correlation = { path = "../risk-governor-correlation" }
+async-nats = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[[bin]]
+name = "policy-engine-worker"
+path = "src/bin/policy_engine_worker.rs"
+
+[[bin]]
+name = "evidence-worker"
+path = "src/bin/evidence_worker.rs"

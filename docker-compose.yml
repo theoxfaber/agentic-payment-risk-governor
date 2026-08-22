@@ -1,0 +1,61 @@
+# Phase 2: infra + split workers.
+# action-service still runs on the host (gets its own container last).
+
+services:
+  nats:
+    image: nats:2.10-alpine
+    container_name: rg-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "127.0.0.1:4222:4222"   # client
+      - "127.0.0.1:8222:8222"   # monitoring / healthz
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 12
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: rg-postgres
+    environment:
+      POSTGRES_USER: governor
+      POSTGRES_PASSWORD: governor
+      POSTGRES_DB: governor
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U governor -d governor"]
+      interval: 3s
+      timeout: 3s
+      retries: 12
+
+  policy-engine:
+    build: .
+    container_name: rg-policy
+    command: ["policy-engine-worker"]
+    environment:
+      NATS_URL: nats://nats:4222
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  evidence-service:
+    build: .
+    container_name: rg-evidence
+    command: ["evidence-worker"]
+    environment:
+      NATS_URL: nats://nats:4222
+      EVIDENCE_SEED: /seeds/evidence-seed.json
+    volumes:
+      - ./seeds:/seeds:ro
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

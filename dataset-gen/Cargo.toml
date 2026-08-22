@@ -1,0 +1,15 @@
+[package]
+name = "dataset-gen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+risk-graph = { path = "../risk-graph" }
+investigation-engine = { path = "../investigation-engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
