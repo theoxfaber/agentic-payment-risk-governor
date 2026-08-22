@@ -236,6 +236,9 @@ pub fn run_all() -> Vec<WorldMetrics> {
     let specs = [
         WorldSpecShorthand::new(WorldKind::Normal, 300, 0, 3),
         WorldSpecShorthand::new(WorldKind::Household, 300, 8, 3),
+        // Coincidental sharing: NAT IPs, popular devices, reused addresses.
+        // All legit — measures honest precision under real-world overlap.
+        WorldSpecShorthand::new(WorldKind::CoincidentalSharing, 300, 8, 3),
         WorldSpecShorthand::new(WorldKind::ReturnAbuse, 300, 6, 3),
         WorldSpecShorthand::new(WorldKind::RefundAbuse, 300, 6, 3),
         WorldSpecShorthand::new(WorldKind::DistributedRing, 300, 6, 3),

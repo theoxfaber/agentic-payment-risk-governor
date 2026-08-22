@@ -25,6 +25,11 @@ use std::collections::HashMap;
 pub enum WorldKind {
     Normal,
     Household,
+    /// Legit background customers share resources with STRANGERS:
+    /// NAT/CGNAT IPs, popular device models, reused address formats.
+    /// Exists to destroy the 100%-precision artifact — in the real world,
+    /// resource overlap does not imply coordination.
+    CoincidentalSharing,
     ReturnAbuse,
     RefundAbuse,
     DistributedRing,
@@ -92,6 +97,50 @@ pub fn generate_world(spec: WorldSpec) -> World {
             let members: Vec<String> = (0..spec.ring_size).map(|m| format!("HH{h}_{m}")).collect();
             for m in &members {
                 push_household_member(&mut rng, &mut b, m, &dev, &adr);
+            }
+        }
+    }
+
+    // --- coincidental sharing: strangers overlap via infrastructure ---
+    // NAT gateways (many customers, one IP), popular device models
+    // (same phone ≠ same person), reused address strings (hostel/office
+    // blocks). Every participant is LEGITIMATE — this world exists to
+    // destroy the 100%-precision artifact.
+    if matches!(spec.kind, WorldKind::CoincidentalSharing) {
+        for g in 0..spec.n_rings {
+            // Group 1: strangers behind one NAT gateway.
+            let nat = format!("IP_NAT{g}");
+            for i in 0..(spec.ring_size + 2) {
+                let id = format!("NAT{g}_{i}");
+                push_background_customer(
+                    &mut rng, &mut b, &id,
+                    &format!("DEV_NAT{g}_{i}"),
+                    &format!("ADR_NAT{g}_{i}"),
+                    &format!("PIN_NAT{g}_{i}"),
+                );
+                b.relate_cust_ip(&id, &nat);
+            }
+            // Group 2: strangers who happen to own the same popular device.
+            let popdev = format!("DEV_POPULAR{g}");
+            for i in 0..spec.ring_size {
+                let id = format!("POP{g}_{i}");
+                push_background_customer(
+                    &mut rng, &mut b, &id,
+                    &popdev,
+                    &format!("ADR_POP{g}_{i}"),
+                    &format!("PIN_POP{g}_{i}"),
+                );
+            }
+            // Group 3: strangers reusing an address string (hostel/office).
+            let blk = format!("ADR_BLOCK{g}");
+            for i in 0..spec.ring_size {
+                let id = format!("BLK{g}_{i}");
+                push_background_customer(
+                    &mut rng, &mut b, &id,
+                    &format!("DEV_BLK{g}_{i}"),
+                    &blk,
+                    &format!("PIN_BLK{g}_{i}"),
+                );
             }
         }
     }
@@ -378,5 +427,9 @@ impl Builder {
 
     fn relate_cust_pin(&mut self, cust: &str, pin: &str) {
         self.gb = self.gb.clone().relate(EntityKind::Customer, cust, RelationKind::UsesInstrument, EntityKind::PaymentInstrument, pin);
+    }
+
+    fn relate_cust_ip(&mut self, cust: &str, ip: &str) {
+        self.gb = self.gb.clone().relate(EntityKind::Customer, cust, RelationKind::FromIp, EntityKind::IpAddress, ip);
     }
 }
