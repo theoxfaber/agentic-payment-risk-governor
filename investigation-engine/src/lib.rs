@@ -105,8 +105,46 @@ pub struct InvestigationResult {
     /// 0..1 — how much of the decision-relevant picture we could actually see.
     pub evidence_confidence: f64,
     pub verdict: Verdict,
+    /// Strong structural linkage exists (cluster ≥3 members OR ≥2 distinct
+    /// shared resource types), independent of behavioral outcome.
+    pub structurally_suspicious: bool,
+    /// Total weight of contradicting evidence. Consumers need this to
+    /// distinguish "unconfirmed" from "exonerated".
+    pub counter_weight: f64,
     /// Sum of weights of exposed value in the cluster (paise).
     pub estimated_exposure_paise: i64,
+}
+
+impl InvestigationResult {
+    /// Operational escalation policy — should money be held?
+    ///
+    /// Under ADVERSARIAL EVASION, a structurally-linked cluster whose
+    /// behavioral investigation comes back empty is NOT exonerated:
+    /// absence of behavioral confirmation, when nothing contradicts the
+    /// linkage itself, is itself suspicious. But when real counter-evidence
+    /// outweighs the hypothesis (established diverse accounts = household),
+    /// clearing is correct. Hence the asymmetry:
+    ///   Supported / Conflicted        → hold (block or human review)
+    ///   Unsupported + strong linkage
+    ///     + weak counter-evidence     → hold for human review
+    ///   Unsupported otherwise         → clear
+    pub fn should_hold_funds(&self) -> bool {
+        match self.verdict {
+            Verdict::Supported | Verdict::Conflicted => true,
+            Verdict::Unsupported => {
+                self.structurally_suspicious && self.counter_weight < 0.25
+            }
+        }
+    }
+
+    /// True when funds are held but a HUMAN, not automation, decided.
+    pub fn requires_human(&self) -> bool {
+        match self.verdict {
+            Verdict::Conflicted => true,
+            Verdict::Supported => self.evidence_confidence < 0.5,
+            Verdict::Unsupported => self.should_hold_funds(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -368,6 +406,9 @@ impl Investigator {
             missing,
             evidence_confidence: confidence,
             verdict,
+            structurally_suspicious: cluster.members.len() >= 3
+                || cluster.link_kinds.len() >= 2,
+            counter_weight,
             estimated_exposure_paise: exposure,
         }
     }
@@ -469,6 +510,8 @@ impl action_service::Investigator for GraphInvestigator {
                 }],
                 evidence_confidence: 0.6,
                 verdict: Verdict::Unsupported,
+                structurally_suspicious: false,
+                counter_weight: 0.0,
                 estimated_exposure_paise: 0,
             },
         };
@@ -482,6 +525,8 @@ impl action_service::Investigator for GraphInvestigator {
             evidence_confidence: result.evidence_confidence,
             support_signals: result.supporting.len() as u32,
             contradiction_count: result.counter.len() as u32,
+            structurally_suspicious: result.structurally_suspicious,
+            counter_weight: result.counter_weight,
             estimated_exposure_paise: result.estimated_exposure_paise,
         };
 

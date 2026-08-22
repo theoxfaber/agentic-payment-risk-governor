@@ -256,9 +256,17 @@ where
 
         let mut extra_rules: Vec<String> = Vec::new();
         if let Some(inv) = investigation {
-            // Unsupported = hypothesis not established → no added friction.
+            // Unsupported = hypothesis not established → no added friction,
+            // EXCEPT the adversarial-evasion case: strong structural linkage
+            // with weak/no counter-evidence and no behavioral confirmation.
+            // Absence of confirmation is itself suspicious → human review.
             if inv.verdict == InvestigationVerdict::Conflicted {
                 extra_rules.push("evidence_contradiction".into());
+            } else if inv.verdict == InvestigationVerdict::Unsupported
+                && inv.structurally_suspicious
+                && inv.counter_weight < 0.25
+            {
+                extra_rules.push("unconfirmed_structural_linkage".into());
             }
             if inv.evidence_confidence < 0.5 && inv.verdict != InvestigationVerdict::Unsupported {
                 extra_rules.push("low_evidence_confidence".into());

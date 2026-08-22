@@ -122,13 +122,17 @@ impl Detector for InvestigationEngineDetector {
         for cluster in world.graph.abuse_ring_clusters(2) {
             let result =
                 inv.investigate_return_abuse(&world.graph, &cluster, &world.behaviors, &world.exposure_paise);
-            let esc = match result.verdict {
-                Verdict::Supported => Escalation::AutoBlock,
-                // Human review counts as escalated for detection purposes —
-                // the money is held either way.
-                Verdict::Conflicted => Escalation::HumanReview,
-                Verdict::Unsupported => Escalation::Clear,
+
+            let esc = if !result.should_hold_funds() {
+                Escalation::Clear
+            } else if result.requires_human() {
+                // Conflicted, low-confidence-supported, or unconfirmed
+                // structural linkage — a human decides.
+                Escalation::HumanReview
+            } else {
+                Escalation::AutoBlock
             };
+
             if esc != Escalation::Clear {
                 for m in &cluster.members {
                     if let Some(ext) = m.0.split_once(':').map(|(_, e)| e.to_string()) {

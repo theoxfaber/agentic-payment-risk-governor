@@ -256,6 +256,11 @@ pub struct InvestigationSummary {
     pub evidence_confidence: f64,
     pub support_signals: u32,
     pub contradiction_count: u32,
+    /// Strong structural linkage exists independent of behavioral outcome.
+    pub structurally_suspicious: bool,
+    /// Total weight of contradicting evidence (distinguishes "unconfirmed"
+    /// from "exonerated" for structurally-linked clusters).
+    pub counter_weight: f64,
     pub estimated_exposure_paise: i64,
 }
 
