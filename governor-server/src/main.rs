@@ -539,15 +539,15 @@ mod tests {
     async fn metrics_counters_track_decision_outcomes() {
         let state = test_state().await;
         // trusted agent, small amount → allow
-        submit_action(State(state.clone()), submit_body("agent-trusted-01", 50_000))
+        let _ = submit_action(State(state.clone()), submit_body("agent-trusted-01", 50_000))
             .await
             .unwrap();
         // trusted agent above approval threshold → review
-        submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
+        let _ = submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
             .await
             .unwrap();
         // over hard cap → block
-        submit_action(State(state.clone()), submit_body("agent-trusted-01", 600_000))
+        let _ = submit_action(State(state.clone()), submit_body("agent-trusted-01", 600_000))
             .await
             .unwrap();
 
@@ -567,7 +567,7 @@ mod tests {
             .unwrap();
         assert_eq!(decision.decision, DecisionOutcome::Review);
 
-        approve_decision(
+        let _ = approve_decision(
             State(state.clone()),
             Path(decision.decision_id),
             Json(ApproveBody {
