@@ -176,3 +176,155 @@ impl action_service::RiskEngine for RiskEngine {
             .map_err(|e| action_service::ActionServiceError::RiskEngine(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use risk_governor_types::{generate_correlation_id, now_utc};
+
+    fn evidence(avg: i64, max: i64, hourly_actions: u32, flags: &[&str]) -> Evidence {
+        Evidence {
+            agent_history: AgentHistory {
+                agent_id: "agent-01".into(),
+                total_actions_30d: 720, // exactly 1/hour expected
+                total_volume_30d: 720 * avg.max(1),
+                avg_amount: avg,
+                max_amount: max,
+                refund_rate: 0.05,
+                block_rate: 0.02,
+                review_rate: 0.03,
+                first_seen: now_utc() - chrono::Duration::days(90),
+                last_action: now_utc() - chrono::Duration::hours(2),
+                action_type_distribution: Default::default(),
+                anomaly_flags: flags.iter().map(|s| s.to_string()).collect(),
+            },
+            merchant_policy: MerchantPolicy {
+                merchant_id: "merchant-001".into(),
+                max_refund_amount: 500_000,
+                max_payout_amount: 1_000_000,
+                max_payment_link_amount: 250_000,
+                daily_refund_limit: 2_000_000,
+                daily_payout_limit: 5_000_000,
+                velocity_threshold_per_hour: 10,
+                allowed_countries: vec![],
+                blocked_countries: vec![],
+                require_approval_above: 100_000,
+                custom_rules: vec![],
+            },
+            customer_history: None,
+            recent_velocity: VelocityStats {
+                actions_last_hour: hourly_actions,
+                ..Default::default()
+            },
+            fetched_at: now_utc(),
+        }
+    }
+
+    fn request(amount: i64, intent: &str) -> AgentActionRequest {
+        AgentActionRequest {
+            agent_id: "agent-01".into(),
+            merchant_id: "merchant-001".into(),
+            action_type: ActionType::Refund,
+            amount,
+            currency: "INR".into(),
+            declared_intent: intent.into(),
+            context: serde_json::json!({}),
+            timestamp: now_utc(),
+            correlation_id: generate_correlation_id(),
+        }
+    }
+
+    fn engine() -> RiskEngine {
+        RiskEngine::default()
+    }
+
+    #[tokio::test]
+    async fn low_risk_score_for_normal_request() {
+        let r = engine()
+            .score(
+                &request(50_000, "refund for order #1"),
+                &evidence(50_000, 100_000, 5, &[]),
+            )
+            .await
+            .unwrap();
+        assert!(r.risk_score < 0.2, "normal action scored {}", r.risk_score);
+        assert_eq!(r.intent_mismatch_score, 0.0);
+    }
+
+    #[tokio::test]
+    async fn high_risk_score_for_anomalous_request() {
+        let r = engine()
+            .score(
+                &request(400_000, "URGENT bypass override"),
+                &evidence(50_000, 100_000, 40, &["rapid_fire"]),
+            )
+            .await
+            .unwrap();
+        assert!(r.risk_score > 0.4, "anomalous action scored {}", r.risk_score);
+    }
+
+    #[tokio::test]
+    async fn intent_mismatch_detects_suspicious_keywords() {
+        let r = engine()
+            .score(&request(50_000, "urgent bypass"), &evidence(50_000, 100_000, 5, &[]))
+            .await
+            .unwrap();
+        // two suspicious keywords + missing "refund" keyword
+        assert!(r.intent_mismatch_score >= 0.5);
+    }
+
+    #[tokio::test]
+    async fn intent_mismatch_zero_on_matching_intent() {
+        let r = engine()
+            .score(
+                &request(50_000, "routine refund for order #42"),
+                &evidence(50_000, 100_000, 5, &[]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.intent_mismatch_score, 0.0);
+    }
+
+    #[tokio::test]
+    async fn intent_mismatch_catches_amount_contradiction() {
+        // declared "small" but amount is large paise value
+        let r = engine()
+            .score(&request(500_000, "small refund"), &evidence(50_000, 100_000, 5, &[]))
+            .await
+            .unwrap();
+        assert!(r.intent_mismatch_score >= 0.2);
+    }
+
+    #[tokio::test]
+    async fn behavioral_drift_clamps_to_five() {
+        let e = evidence(50_000, 100_000, u32::MAX / 2, &[]);
+        let eng = engine();
+        let drift = eng.calculate_behavioral_drift(&e.agent_history, &e.recent_velocity);
+        assert_eq!(drift, 5.0);
+    }
+
+    #[tokio::test]
+    async fn scores_are_bounded_in_unit_interval() {
+        for (avg, amt, hour) in [(1i64, i64::MAX / 4, 1_000u32), (1, 10, 0)] {
+            let r = engine()
+                .score(
+                    &request(amt, "x".repeat(200).as_str()),
+                    &evidence(avg, avg.max(2), hour, &[]),
+                )
+                .await
+                .unwrap();
+            assert!((0.0..=1.0).contains(&r.risk_score));
+            assert!((0.0..=1.0).contains(&r.intent_mismatch_score));
+        }
+    }
+
+    #[tokio::test]
+    async fn model_version_round_trips() {
+        let e = RiskEngine::new("9.9.9-test".into());
+        let r = e
+            .score(&request(1_000, "refund"), &evidence(50_000, 100_000, 5, &[]))
+            .await
+            .unwrap();
+        assert_eq!(r.model_version, "9.9.9-test");
+    }
+}
