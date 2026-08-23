@@ -1,5 +1,7 @@
 # Risk Governor
 
+[![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
+
 **A safety and governance layer for autonomous financial agents.**
 
 > AI agents can now execute financial actions — refunds, payouts, orders — on
@@ -154,6 +156,12 @@ action_requested → policy_evaluated → risk_scored → graph_analyzed
 ```
 
 ### 2. Tests, eval, demos
+
+`cargo test --workspace` is fully self-contained: ~90 tests, no network, no
+credentials, no Docker required. Tests that need live infrastructure
+(NATS/compose stack) are tagged `#[ignore]` with the reason in the attribute —
+run them explicitly after `docker compose up -d`. CI gates every push on
+build + test + clippy (`-D warnings`) + fmt + a cargo-audit dependency scan.
 
 ```bash
 # Tests (full workspace)
