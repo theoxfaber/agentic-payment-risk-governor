@@ -103,17 +103,7 @@ impl<S: AuditStore + 'static> action_service::AuditService for AuditService<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use risk_governor_types::{generate_correlation_id, now_utc};
-
-    fn record(decision_id: Option<Uuid>, event: AuditEventType) -> AuditRecord {
-        AuditRecord {
-            record_id: generate_correlation_id(),
-            decision_id,
-            event_type: event,
-            payload: serde_json::json!({ "k": "v" }),
-            created_at: now_utc(),
-        }
-    }
+    use risk_governor_types::generate_correlation_id;
 
     #[tokio::test]
     async fn append_and_retrieve_by_decision() {

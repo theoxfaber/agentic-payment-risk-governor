@@ -9,6 +9,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "chrono",
  "risk-governor-correlation",
  "risk-governor-types",
  "serde",
@@ -1689,7 +1690,9 @@ dependencies = [
  "chrono",
  "risk-governor-types",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 
@@ -2028,7 +2031,9 @@ dependencies = [
  "chrono",
  "risk-governor-types",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
 ]
 
@@ -2055,9 +2060,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "audit-service",
+ "chrono",
  "risk-governor-types",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "uuid",
 ]
 

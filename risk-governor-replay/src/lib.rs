@@ -147,7 +147,6 @@ mod tests {
     }
 
     async fn seed_full_trail(store: &Arc<InMemoryAuditStore>, decision_id: Uuid, decision: &Decision) {
-        let svc = AuditService::new(store.clone());
         let mut records = vec![
             AuditRecord {
                 record_id: generate_correlation_id(),
