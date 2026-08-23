@@ -367,3 +367,258 @@ pub fn validate_request(request: &AgentActionRequest) -> Result<(), ActionServic
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use risk_governor_types::{generate_correlation_id, now_utc};
+
+    // --- input validation ---------------------------------------------
+
+    fn valid_request() -> AgentActionRequest {
+        AgentActionRequest {
+            agent_id: "agent-01".into(),
+            merchant_id: "merchant-001".into(),
+            action_type: ActionType::Refund,
+            amount: 50_000,
+            currency: "INR".into(),
+            declared_intent: "refund for order #123".into(),
+            context: serde_json::json!({ "customer_id": "cust_1" }),
+            timestamp: now_utc(),
+            correlation_id: generate_correlation_id(),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_request() {
+        assert!(validate_request(&valid_request()).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_agent_id() {
+        let mut r = valid_request();
+        r.agent_id = String::new();
+        assert!(matches!(validate_request(&r), Err(ActionServiceError::Validation(_))));
+    }
+
+    #[test]
+    fn validate_rejects_empty_merchant_id() {
+        let mut r = valid_request();
+        r.merchant_id = String::new();
+        assert!(validate_request(&r).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_zero_amount() {
+        let mut r = valid_request();
+        r.amount = 0;
+        assert!(validate_request(&r).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_negative_amount() {
+        let mut r = valid_request();
+        r.amount = -100;
+        assert!(validate_request(&r).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_currency() {
+        let mut r = valid_request();
+        r.currency = String::new();
+        assert!(validate_request(&r).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_declared_intent() {
+        let mut r = valid_request();
+        r.declared_intent = String::new();
+        assert!(validate_request(&r).is_err());
+    }
+
+    // --- combiner behavior (full pipeline with stub planes) ------------
+
+    /// Allow-all policy plane.
+    struct AllowAll;
+
+    #[async_trait::async_trait]
+    impl PolicyEngine for AllowAll {
+        async fn evaluate(&self, _: &AgentActionRequest, _: &Evidence) -> Result<PolicyResult, ActionServiceError> {
+            Ok(PolicyResult {
+                verdict: PolicyVerdict::Allow,
+                matched_rules: vec![],
+                violated_thresholds: vec![],
+                evaluated_at: now_utc(),
+            })
+        }
+    }
+
+    struct FixedRisk(f64);
+
+    #[async_trait::async_trait]
+    impl RiskEngine for FixedRisk {
+        async fn score(&self, _: &AgentActionRequest, _: &Evidence) -> Result<RiskResult, ActionServiceError> {
+            Ok(RiskResult {
+                risk_score: self.0,
+                intent_mismatch_score: 0.0,
+                features: RiskFeatures {
+                    amount_zscore: 0.0,
+                    velocity_zscore: 0.0,
+                    intent_mismatch_score: 0.0,
+                    behavioral_drift_score: 0.0,
+                    merchant_risk_score: 0.0,
+                    agent_risk_score: 0.0,
+                    customer_risk_score: 0.0,
+                    time_since_last_action_hours: 0.0,
+                    amount_vs_avg_ratio: 1.0,
+                },
+                model_version: "fixed-test".into(),
+                evaluated_at: now_utc(),
+            })
+        }
+    }
+
+    struct EvidenceOk;
+
+    fn benign_evidence(req: &AgentActionRequest) -> Evidence {
+        Evidence {
+            agent_history: AgentHistory {
+                agent_id: req.agent_id.clone(),
+                total_actions_30d: 10,
+                total_volume_30d: 500_000,
+                avg_amount: 50_000,
+                max_amount: 100_000,
+                refund_rate: 0.05,
+                block_rate: 0.02,
+                review_rate: 0.03,
+                first_seen: now_utc() - chrono::Duration::days(90),
+                last_action: now_utc() - chrono::Duration::hours(2),
+                action_type_distribution: Default::default(),
+                anomaly_flags: vec![],
+            },
+            merchant_policy: MerchantPolicy {
+                merchant_id: req.merchant_id.clone(),
+                max_refund_amount: i64::MAX / 2,
+                max_payout_amount: i64::MAX / 2,
+                max_payment_link_amount: i64::MAX / 2,
+                daily_refund_limit: i64::MAX / 2,
+                daily_payout_limit: i64::MAX / 2,
+                velocity_threshold_per_hour: u32::MAX,
+                allowed_countries: vec![],
+                blocked_countries: vec![],
+                require_approval_above: i64::MAX / 2,
+                custom_rules: vec![],
+            },
+            customer_history: None,
+            recent_velocity: VelocityStats::default(),
+            fetched_at: now_utc(),
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl EvidenceService for EvidenceOk {
+        async fn gather(&self, req: &AgentActionRequest) -> Result<GatheredEvidence, ActionServiceError> {
+            Ok(GatheredEvidence::fresh(benign_evidence(req)))
+        }
+        async fn record_action(&self, _: &AgentActionRequest) -> Result<(), ActionServiceError> {
+            Ok(())
+        }
+    }
+
+    struct AuditOk;
+
+    #[async_trait::async_trait]
+    impl AuditService for AuditOk {
+        async fn record(&self, _: AuditRecord) -> Result<(), ActionServiceError> {
+            Ok(())
+        }
+    }
+
+    struct GatewayOk;
+
+    #[async_trait::async_trait]
+    impl RazorpayGateway for GatewayOk {
+        async fn execute(
+            &self,
+            _: &AgentActionRequest,
+            decision_id: Uuid,
+        ) -> Result<serde_json::Value, ActionServiceError> {
+            Ok(serde_json::json!({ "id": format!("rfnd_mock_{decision_id}"), "status": "processed" }))
+        }
+    }
+
+    fn service_with_risk(score: f64) -> ActionService<AllowAll, FixedRisk, EvidenceOk, AuditOk, GatewayOk> {
+        ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedRisk(score)),
+            Arc::new(EvidenceOk),
+            Arc::new(AuditOk),
+            Arc::new(GatewayOk),
+        )
+    }
+
+    #[tokio::test]
+    async fn low_risk_allows_clean_action_and_executes() {
+        let svc = service_with_risk(0.05);
+        let d = svc.process_action(valid_request()).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Allow);
+    }
+
+    #[tokio::test]
+    async fn moderate_risk_reviews_not_blocks() {
+        let svc = service_with_risk(0.6);
+        let d = svc.process_action(valid_request()).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Review);
+    }
+
+    #[tokio::test]
+    async fn high_risk_without_investigation_blocks() {
+        // No investigation plane attached: a high risk score acts on its own.
+        // The safety property needs the investigator present to soften this —
+        // pinned here so removing the combiner's high-risk branch is caught.
+        let svc = service_with_risk(0.9);
+        let d = svc.process_action(valid_request()).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Block);
+    }
+
+    #[tokio::test]
+    async fn correlation_id_generated_when_absent() {
+        let svc = service_with_risk(0.05);
+        let mut req = valid_request();
+        req.correlation_id = Uuid::nil();
+        let d = svc.process_action(req).await.unwrap();
+        assert!(!d.action.correlation_id.is_nil());
+    }
+
+    #[tokio::test]
+    async fn degraded_evidence_forces_review() {
+        // Simulates the evidence plane answering but flagging degradation:
+        // the combiner must refuse silent-allow.
+        struct Degraded;
+        #[async_trait::async_trait]
+        impl EvidenceService for Degraded {
+            async fn gather(&self, req: &AgentActionRequest) -> Result<GatheredEvidence, ActionServiceError> {
+                let mut g = GatheredEvidence::fresh(benign_evidence(req));
+                g.degraded_reason = Some("nats_timeout".into());
+                Ok(g)
+            }
+            async fn record_action(&self, _: &AgentActionRequest) -> Result<(), ActionServiceError> {
+                Ok(())
+            }
+        }
+        let svc: ActionService<AllowAll, FixedRisk, Degraded, AuditOk, GatewayOk> = ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedRisk(0.01)), // would be a clean ALLOW if degradation were ignored
+            Arc::new(Degraded),
+            Arc::new(AuditOk),
+            Arc::new(GatewayOk),
+        );
+        let d = svc.process_action(valid_request()).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Review);
+        assert!(d
+            .policy_result
+            .matched_rules
+            .iter()
+            .any(|r| r.starts_with("evidence_service_unavailable")));
+    }
+}
