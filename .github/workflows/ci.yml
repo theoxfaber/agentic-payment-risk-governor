@@ -47,3 +47,23 @@ jobs:
           tool: cargo-audit
       - name: Audit dependencies for known advisories
         run: cargo audit
+
+  coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Measure line coverage (fail below threshold)
+        run: cargo llvm-cov --workspace --fail-under-lines 60 --text
+      - name: Generate LCOV report artifact
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
