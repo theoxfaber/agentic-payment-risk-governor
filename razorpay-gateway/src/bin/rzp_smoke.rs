@@ -33,7 +33,10 @@ async fn main() -> anyhow::Result<()> {
     let payment_id = payment["id"].as_str().expect("payment id").to_string();
     let pay_status = payment["status"].as_str().unwrap_or("?");
     println!("   payment {payment_id} status={pay_status}");
-    assert_eq!(pay_status, "captured", "auto-captured order should yield captured payment");
+    assert_eq!(
+        pay_status, "captured",
+        "auto-captured order should yield captured payment"
+    );
 
     println!("== 4/4 refund via production HttpGateway path ==");
     // This exercises the SAME execute() the governor calls on ALLOW.

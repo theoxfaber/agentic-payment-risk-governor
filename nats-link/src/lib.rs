@@ -47,7 +47,10 @@ pub struct NatsPolicyEngine {
 
 impl NatsPolicyEngine {
     pub fn new(client: Client) -> Self {
-        Self { client, timeout: DEFAULT_EVAL_TIMEOUT }
+        Self {
+            client,
+            timeout: DEFAULT_EVAL_TIMEOUT,
+        }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -71,7 +74,10 @@ impl action_service::PolicyEngine for NatsPolicyEngine {
             .await
             .map_err(|e| action_service::ActionServiceError::PolicyEngine(e.to_string()))?;
 
-        let job = PolicyEvaluateJob { request: request.clone(), evidence: evidence.clone() };
+        let job = PolicyEvaluateJob {
+            request: request.clone(),
+            evidence: evidence.clone(),
+        };
         let bytes = Envelope::new(SUBJECT_POLICY_EVAL, job)
             .encode()
             .map_err(|e| action_service::ActionServiceError::PolicyEngine(e.to_string()))?;
@@ -87,10 +93,7 @@ impl action_service::PolicyEngine for NatsPolicyEngine {
                 // status arrives when the worker's subscription hasn't
                 // registered (or is down). Fail safe, don't decode garbage.
                 if msg.status.is_some() {
-                    let code = msg
-                        .status
-                        .map(|s| s.as_u16().to_string())
-                        .unwrap_or_default();
+                    let code = msg.status.map(|s| s.as_u16().to_string()).unwrap_or_default();
                     return Ok(policy_unavailable_result(&format!("no_responders_{code}")));
                 }
                 let env: Envelope<PolicyResult> = decode(&msg.payload)
@@ -208,7 +211,10 @@ fn fail_safe_evidence(request: &AgentActionRequest, reason: &str) -> GatheredEvi
         recent_velocity: VelocityStats::default(),
         fetched_at: now_utc(),
     };
-    GatheredEvidence { evidence, degraded_reason: Some(reason.to_string()) }
+    GatheredEvidence {
+        evidence,
+        degraded_reason: Some(reason.to_string()),
+    }
 }
 
 pub struct NatsEvidenceService {
@@ -218,7 +224,10 @@ pub struct NatsEvidenceService {
 
 impl NatsEvidenceService {
     pub fn new(client: Client) -> Self {
-        Self { client, timeout: DEFAULT_GATHER_TIMEOUT }
+        Self {
+            client,
+            timeout: DEFAULT_GATHER_TIMEOUT,
+        }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
@@ -229,10 +238,7 @@ impl NatsEvidenceService {
 
 #[async_trait::async_trait]
 impl action_service::EvidenceService for NatsEvidenceService {
-    async fn gather(
-        &self,
-        request: &AgentActionRequest,
-    ) -> Result<GatheredEvidence, ActionServiceError> {
+    async fn gather(&self, request: &AgentActionRequest) -> Result<GatheredEvidence, ActionServiceError> {
         let cid = risk_governor_correlation::current_correlation_id();
         let reply = format!("evidence.gather.reply.{cid}");
         let mut sub = self
@@ -257,14 +263,12 @@ impl action_service::EvidenceService for NatsEvidenceService {
                     let code = msg.status.map(|s| s.as_u16().to_string()).unwrap_or_default();
                     return Ok(fail_safe_evidence(request, &format!("no_responders_{code}")));
                 }
-                let env: Envelope<EvidenceOutcome> = decode(&msg.payload)
-                    .map_err(|e| ActionServiceError::EvidenceService(e.to_string()))?;
+                let env: Envelope<EvidenceOutcome> =
+                    decode(&msg.payload).map_err(|e| ActionServiceError::EvidenceService(e.to_string()))?;
                 match env.payload {
                     EvidenceOutcome::Ready(ev) => Ok(GatheredEvidence::fresh(ev)),
                     // Application-level: unknown merchant/agent → fail CLOSED
-                    EvidenceOutcome::NotFound(msg) => {
-                        Err(ActionServiceError::EvidenceService(msg))
-                    }
+                    EvidenceOutcome::NotFound(msg) => Err(ActionServiceError::EvidenceService(msg)),
                 }
             }
             Ok(None) => Ok(fail_safe_evidence(request, "worker_closed_inbox")),
@@ -328,11 +332,7 @@ pub fn spawn_evidence_worker(client: Client, store: Arc<InMemoryEvidenceStore>) 
     })
 }
 
-async fn handle_gather(
-    client: Client,
-    store: Arc<InMemoryEvidenceStore>,
-    msg: async_nats::Message,
-) {
+async fn handle_gather(client: Client, store: Arc<InMemoryEvidenceStore>, msg: async_nats::Message) {
     let env: Envelope<AgentActionRequest> = match decode(&msg.payload) {
         Ok(env) => env,
         Err(e) => {

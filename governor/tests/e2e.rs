@@ -14,7 +14,12 @@ type TestService = ActionService<
     MockGateway,
 >;
 
-fn wire() -> (Arc<TestService>, Arc<InMemoryEvidenceStore>, Arc<AuditService<InMemoryAuditStore>>, Arc<MockGateway>) {
+fn wire() -> (
+    Arc<TestService>,
+    Arc<InMemoryEvidenceStore>,
+    Arc<AuditService<InMemoryAuditStore>>,
+    Arc<MockGateway>,
+) {
     let evidence_store = Arc::new(InMemoryEvidenceStore::new());
     let audit_store = Arc::new(InMemoryAuditStore::new());
     let gateway = Arc::new(MockGateway::default());
@@ -25,12 +30,7 @@ fn wire() -> (Arc<TestService>, Arc<InMemoryEvidenceStore>, Arc<AuditService<InM
         Arc::new(audit_service::AuditService::new(audit_store.clone())),
         gateway.clone(),
     ));
-    (
-        svc,
-        evidence_store,
-        Arc::new(AuditService::new(audit_store)),
-        gateway,
-    )
+    (svc, evidence_store, Arc::new(AuditService::new(audit_store)), gateway)
 }
 
 async fn seed(store: &InMemoryEvidenceStore) {
@@ -74,15 +74,24 @@ async fn allow_review_block_end_to_end() {
     seed(&store).await;
 
     // ALLOW: small legit refund
-    let allow = svc.process_action(refund("agent-1", 50_000, "refund for order #123")).await.unwrap();
+    let allow = svc
+        .process_action(refund("agent-1", 50_000, "refund for order #123"))
+        .await
+        .unwrap();
     assert_eq!(allow.decision, DecisionOutcome::Allow);
 
     // REVIEW: above require_approval_above (100k) → deterministic human queue
-    let review = svc.process_action(refund("agent-1", 150_000, "refund order #456")).await.unwrap();
+    let review = svc
+        .process_action(refund("agent-1", 150_000, "refund order #456"))
+        .await
+        .unwrap();
     assert_eq!(review.decision, DecisionOutcome::Review);
 
     // BLOCK: over max_refund_amount hard cap
-    let block = svc.process_action(refund("agent-1", 600_000, "refund #789")).await.unwrap();
+    let block = svc
+        .process_action(refund("agent-1", 600_000, "refund #789"))
+        .await
+        .unwrap();
     assert_eq!(block.decision, DecisionOutcome::Block);
 
     // Gateway fires ONLY on Allow
@@ -99,7 +108,9 @@ async fn allow_review_block_end_to_end() {
     assert!(kinds.contains(&AuditEventType::RazorpayCalled));
 
     let blocked_trail = audit.trail_for(block.decision_id).await.unwrap();
-    assert!(!blocked_trail.iter().any(|r| r.event_type == AuditEventType::RazorpayCalled));
+    assert!(!blocked_trail
+        .iter()
+        .any(|r| r.event_type == AuditEventType::RazorpayCalled));
 
     // Velocity feedback loop recorded the three processed actions
     let v = store.velocity("agent-1").await.unwrap();
@@ -124,7 +135,10 @@ async fn replay_explains_the_decision() {
 
     // The cause is in the snapshot: hard-cap violation names the rule and numbers
     let violation = &replay.decision.policy_result.violated_thresholds[0];
-    assert!(violation.contains("600000") && violation.contains("500000"), "violation: {violation}");
+    assert!(
+        violation.contains("600000") && violation.contains("500000"),
+        "violation: {violation}"
+    );
 }
 
 /// Failure-mode discipline: unknown agent fails closed to an error, never silent-allow.

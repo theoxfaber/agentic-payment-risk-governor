@@ -57,7 +57,11 @@ impl Detector for PerCustomerRateRule {
                 } else {
                     b.return_count.max(b.refund_count) as f64 / b.order_count as f64
                 };
-                let esc = if rate > threshold { Escalation::AutoBlock } else { Escalation::Clear };
+                let esc = if rate > threshold {
+                    Escalation::AutoBlock
+                } else {
+                    Escalation::Clear
+                };
                 (id.clone(), esc)
             })
             .collect()
@@ -84,11 +88,8 @@ impl Detector for StructuralClusterOnly {
     }
 
     fn scan(&mut self, world: &World) -> HashMap<String, Escalation> {
-        let mut out: HashMap<String, Escalation> = world
-            .behaviors
-            .keys()
-            .map(|k| (k.clone(), Escalation::Clear))
-            .collect();
+        let mut out: HashMap<String, Escalation> =
+            world.behaviors.keys().map(|k| (k.clone(), Escalation::Clear)).collect();
         for c in world.graph.abuse_ring_clusters(self.min_cluster_size) {
             for m in c.members {
                 if let Some(ext) = m.0.split_once(':').map(|(_, e)| e.to_string()) {
@@ -112,16 +113,12 @@ impl Detector for InvestigationEngineDetector {
     }
 
     fn scan(&mut self, world: &World) -> HashMap<String, Escalation> {
-        let mut out: HashMap<String, Escalation> = world
-            .behaviors
-            .keys()
-            .map(|k| (k.clone(), Escalation::Clear))
-            .collect();
+        let mut out: HashMap<String, Escalation> =
+            world.behaviors.keys().map(|k| (k.clone(), Escalation::Clear)).collect();
 
         let inv = Investigator::new(baseline_of(world));
         for cluster in world.graph.abuse_ring_clusters(2) {
-            let result =
-                inv.investigate_return_abuse(&world.graph, &cluster, &world.behaviors, &world.exposure_paise);
+            let result = inv.investigate_return_abuse(&world.graph, &cluster, &world.behaviors, &world.exposure_paise);
 
             let esc = if !result.should_hold_funds() {
                 Escalation::Clear
@@ -211,14 +208,29 @@ pub fn evaluate(world: &World, detector: &mut dyn Detector) -> WorldMetrics {
         }
     }
 
-    let precision = if tp + fp == 0 { 1.0 } else { tp as f64 / (tp + fp) as f64 };
-    let recall = if tp + fn_count == 0 { 1.0 } else { tp as f64 / (tp + fn_count) as f64 };
-    let f1 = if precision + recall == 0.0 { 0.0 } else { 2.0 * precision * recall / (precision + recall) };
+    let precision = if tp + fp == 0 {
+        1.0
+    } else {
+        tp as f64 / (tp + fp) as f64
+    };
+    let recall = if tp + fn_count == 0 {
+        1.0
+    } else {
+        tp as f64 / (tp + fn_count) as f64
+    };
+    let f1 = if precision + recall == 0.0 {
+        0.0
+    } else {
+        2.0 * precision * recall / (precision + recall)
+    };
 
     WorldMetrics {
         world: world.name.clone(),
         detector: detector.name(),
-        tp, fp, tn, fn_count,
+        tp,
+        fp,
+        tn,
+        fn_count,
         precision,
         recall,
         f1,
@@ -267,7 +279,13 @@ struct WorldSpecShorthand {
 impl WorldSpecShorthand {
     fn new(kind: dataset_gen::WorldKind, bg: usize, rings: usize, size: usize) -> Self {
         Self {
-            spec: dataset_gen::WorldSpec { kind, n_background: bg, n_rings: rings, ring_size: size, seed: 2026 },
+            spec: dataset_gen::WorldSpec {
+                kind,
+                n_background: bg,
+                n_rings: rings,
+                ring_size: size,
+                seed: 2026,
+            },
         }
     }
 }

@@ -22,7 +22,11 @@ pub enum ActionServiceError {
 
 #[async_trait::async_trait]
 pub trait PolicyEngine: Send + Sync {
-    async fn evaluate(&self, request: &AgentActionRequest, evidence: &Evidence) -> Result<PolicyResult, ActionServiceError>;
+    async fn evaluate(
+        &self,
+        request: &AgentActionRequest,
+        evidence: &Evidence,
+    ) -> Result<PolicyResult, ActionServiceError>;
 }
 
 #[async_trait::async_trait]
@@ -42,7 +46,10 @@ pub struct GatheredEvidence {
 
 impl GatheredEvidence {
     pub fn fresh(evidence: Evidence) -> Self {
-        Self { evidence, degraded_reason: None }
+        Self {
+            evidence,
+            degraded_reason: None,
+        }
     }
 }
 
@@ -59,7 +66,11 @@ pub trait AuditService: Send + Sync {
 
 #[async_trait::async_trait]
 pub trait RazorpayGateway: Send + Sync {
-    async fn execute(&self, request: &AgentActionRequest, decision_id: Uuid) -> Result<serde_json::Value, ActionServiceError>;
+    async fn execute(
+        &self,
+        request: &AgentActionRequest,
+        decision_id: Uuid,
+    ) -> Result<serde_json::Value, ActionServiceError>;
 }
 
 /// Intelligence plane boundary. Returns the combiner-facing summary plus a
@@ -144,46 +155,56 @@ where
         // Feedback loop: every processed request updates velocity/history.
         self.evidence_service.record_action(&request).await?;
 
-        self.audit_service.record(AuditRecord {
-            record_id: generate_correlation_id(),
-            decision_id: did,
-            event_type: AuditEventType::ActionRequested,
-            payload: serde_json::to_value(&request).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
-            created_at: now_utc(),
-        }).await?;
+        self.audit_service
+            .record(AuditRecord {
+                record_id: generate_correlation_id(),
+                decision_id: did,
+                event_type: AuditEventType::ActionRequested,
+                payload: serde_json::to_value(&request).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
+                created_at: now_utc(),
+            })
+            .await?;
 
         let policy_result = self.policy_engine.evaluate(&request, &evidence).await?;
 
-        self.audit_service.record(AuditRecord {
-            record_id: generate_correlation_id(),
-            decision_id: did,
-            event_type: AuditEventType::PolicyEvaluated,
-            payload: serde_json::to_value(&policy_result).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
-            created_at: now_utc(),
-        }).await?;
+        self.audit_service
+            .record(AuditRecord {
+                record_id: generate_correlation_id(),
+                decision_id: did,
+                event_type: AuditEventType::PolicyEvaluated,
+                payload: serde_json::to_value(&policy_result)
+                    .map_err(|e| ActionServiceError::Validation(e.to_string()))?,
+                created_at: now_utc(),
+            })
+            .await?;
 
         let risk_result = self.risk_engine.score(&request, &evidence).await?;
 
-        self.audit_service.record(AuditRecord {
-            record_id: generate_correlation_id(),
-            decision_id: did,
-            event_type: AuditEventType::RiskScored,
-            payload: serde_json::to_value(&risk_result).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
-            created_at: now_utc(),
-        }).await?;
+        self.audit_service
+            .record(AuditRecord {
+                record_id: generate_correlation_id(),
+                decision_id: did,
+                event_type: AuditEventType::RiskScored,
+                payload: serde_json::to_value(&risk_result)
+                    .map_err(|e| ActionServiceError::Validation(e.to_string()))?,
+                created_at: now_utc(),
+            })
+            .await?;
 
         // Intelligence plane: construct/test the risk hypothesis BEFORE the
         // combiner acts, so a high score with weak evidence can't auto-act.
         let investigation: Option<InvestigationSummary> = match &self.investigator {
             Some(inv) => {
                 let (summary, payload) = inv.investigate(&request, &evidence).await?;
-                self.audit_service.record(AuditRecord {
-                    record_id: generate_correlation_id(),
-                    decision_id: did,
-                    event_type: AuditEventType::GraphAnalyzed,
-                    payload,
-                    created_at: now_utc(),
-                }).await?;
+                self.audit_service
+                    .record(AuditRecord {
+                        record_id: generate_correlation_id(),
+                        decision_id: did,
+                        event_type: AuditEventType::GraphAnalyzed,
+                        payload,
+                        created_at: now_utc(),
+                    })
+                    .await?;
                 Some(summary)
             }
             None => None,
@@ -199,27 +220,38 @@ where
                 .push(format!("evidence_service_unavailable:{reason}"));
         }
 
-        let decision = self.combine_decision(decision_id, request.clone(), evidence.clone(), policy_result.clone(), risk_result.clone(), investigation.as_ref())?;
+        let decision = self.combine_decision(
+            decision_id,
+            request.clone(),
+            evidence.clone(),
+            policy_result.clone(),
+            risk_result.clone(),
+            investigation.as_ref(),
+        )?;
 
-        self.audit_service.record(AuditRecord {
-            record_id: generate_correlation_id(),
-            decision_id: Some(decision.decision_id),
-            event_type: AuditEventType::DecisionMade,
-            payload: serde_json::to_value(&decision).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
-            created_at: now_utc(),
-        }).await?;
+        self.audit_service
+            .record(AuditRecord {
+                record_id: generate_correlation_id(),
+                decision_id: Some(decision.decision_id),
+                event_type: AuditEventType::DecisionMade,
+                payload: serde_json::to_value(&decision).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
+                created_at: now_utc(),
+            })
+            .await?;
 
         match decision.decision {
             DecisionOutcome::Allow => {
                 let razorpay_response = self.razorpay_gateway.execute(&request, decision.decision_id).await?;
 
-                self.audit_service.record(AuditRecord {
-                    record_id: generate_correlation_id(),
-                    decision_id: Some(decision.decision_id),
-                    event_type: AuditEventType::RazorpayCalled,
-                    payload: razorpay_response,
-                    created_at: now_utc(),
-                }).await?;
+                self.audit_service
+                    .record(AuditRecord {
+                        record_id: generate_correlation_id(),
+                        decision_id: Some(decision.decision_id),
+                        event_type: AuditEventType::RazorpayCalled,
+                        payload: razorpay_response,
+                        created_at: now_utc(),
+                    })
+                    .await?;
             }
             DecisionOutcome::Review => {
                 // Human review queue - will be handled by dashboard
@@ -283,9 +315,7 @@ where
         let evidence_unreliable = investigation
             .map(|inv| inv.verdict == InvestigationVerdict::Conflicted || inv.evidence_confidence < 0.5)
             .unwrap_or(false);
-        let contradicted = investigation
-            .map(|inv| inv.contradiction_count > 0)
-            .unwrap_or(false);
+        let contradicted = investigation.map(|inv| inv.contradiction_count > 0).unwrap_or(false);
 
         let decision = if policy_result.verdict == PolicyVerdict::Block {
             DecisionOutcome::Block
@@ -294,11 +324,7 @@ where
             DecisionOutcome::Review
         } else if high_risk {
             DecisionOutcome::Block
-        } else if contradicted
-            || !extra_rules.is_empty()
-            || needs_review
-            || risk_result.risk_score >= 0.5
-        {
+        } else if contradicted || !extra_rules.is_empty() || needs_review || risk_result.risk_score >= 0.5 {
             DecisionOutcome::Review
         } else {
             DecisionOutcome::Allow
@@ -335,7 +361,9 @@ pub fn validate_request(request: &AgentActionRequest) -> Result<(), ActionServic
         return Err(ActionServiceError::Validation("currency is required".to_string()));
     }
     if request.declared_intent.is_empty() {
-        return Err(ActionServiceError::Validation("declared_intent is required".to_string()));
+        return Err(ActionServiceError::Validation(
+            "declared_intent is required".to_string(),
+        ));
     }
     Ok(())
 }

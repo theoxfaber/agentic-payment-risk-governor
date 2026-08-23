@@ -4,9 +4,7 @@
 //!   - Household: counter-evidence must exonerate (FP == 0)
 
 use dataset_gen::{generate_world, WorldKind, WorldSpec};
-use eval_harness::{
-    evaluate, InvestigationEngineDetector, PerCustomerRateRule, StructuralClusterOnly,
-};
+use eval_harness::{evaluate, InvestigationEngineDetector, PerCustomerRateRule, StructuralClusterOnly};
 
 fn evasion_world() -> dataset_gen::World {
     generate_world(WorldSpec {
@@ -76,7 +74,8 @@ fn detector_contrast_is_preserved() {
     assert!(
         s.fp > i.fp,
         "structural-only ({}) must be worse than investigation ({}) on households",
-        s.fp, i.fp
+        s.fp,
+        i.fp
     );
     let _ = r;
 

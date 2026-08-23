@@ -172,12 +172,7 @@ impl PropertyGraph {
         }
     }
 
-    pub fn add_edge(
-        &mut self,
-        from: EntityId,
-        relation: RelationKind,
-        to: EntityId,
-    ) -> Result<(), GraphError> {
+    pub fn add_edge(&mut self, from: EntityId, relation: RelationKind, to: EntityId) -> Result<(), GraphError> {
         if !self.nodes.contains_key(&from) {
             return Err(GraphError::MissingEndpoint(from.0));
         }
@@ -185,7 +180,12 @@ impl PropertyGraph {
             return Err(GraphError::MissingEndpoint(to.0));
         }
         let idx = self.edges.len();
-        self.edges.push(Edge { from, relation, to, attrs: Default::default() });
+        self.edges.push(Edge {
+            from,
+            relation,
+            to,
+            attrs: Default::default(),
+        });
         // safe: both endpoints were touched above (or pre-existed)
         let f = self.edges[idx].from.clone();
         let t = self.edges[idx].to.clone();
@@ -294,7 +294,9 @@ struct UnionFind {
 
 impl UnionFind {
     fn new(n: usize) -> Self {
-        Self { parent: (0..n).collect() }
+        Self {
+            parent: (0..n).collect(),
+        }
     }
 
     fn find(&mut self, mut x: usize) -> usize {
@@ -327,13 +329,11 @@ impl PropertyGraph {
             v.sort_by(|a, b| a.id.0.cmp(&b.id.0));
             v
         };
-        let index: HashMap<&EntityId, usize> =
-            customers.iter().enumerate().map(|(i, c)| (&c.id, i)).collect();
+        let index: HashMap<&EntityId, usize> = customers.iter().enumerate().map(|(i, c)| (&c.id, i)).collect();
 
         let mut uf = UnionFind::new(customers.len());
         let mut shared_resources: HashMap<usize, Vec<EntityId>> = HashMap::new();
-        let mut link_kinds_seen: HashMap<usize, std::collections::BTreeSet<RelationKind>> =
-            HashMap::new();
+        let mut link_kinds_seen: HashMap<usize, std::collections::BTreeSet<RelationKind>> = HashMap::new();
 
         // For every resource node, join all customers pointing at it.
         for rel in RelationKind::linking_kinds() {
@@ -342,7 +342,11 @@ impl PropertyGraph {
                     continue;
                 }
                 // incoming users of this resource
-                let users: Vec<usize> = self.in_edges.get(&edge.to).into_iter().flatten()
+                let users: Vec<usize> = self
+                    .in_edges
+                    .get(&edge.to)
+                    .into_iter()
+                    .flatten()
                     .filter_map(|&i| {
                         let re = &self.edges[i];
                         if re.relation == *rel {
@@ -356,7 +360,10 @@ impl PropertyGraph {
                     continue;
                 }
                 // Only cluster CUSTOMER users
-                let cus_users: Vec<usize> = users.into_iter().filter(|u| customers[*u].kind == EntityKind::Customer).collect();
+                let cus_users: Vec<usize> = users
+                    .into_iter()
+                    .filter(|u| customers[*u].kind == EntityKind::Customer)
+                    .collect();
                 if cus_users.len() < 2 {
                     continue;
                 }
@@ -364,7 +371,10 @@ impl PropertyGraph {
                     uf.union(cus_users[0], u);
                 }
                 let root = uf.find(cus_users[0]);
-                shared_resources.entry(root).or_default().push(EntityId(self.edges[ri].to.0.clone()));
+                shared_resources
+                    .entry(root)
+                    .or_default()
+                    .push(EntityId(self.edges[ri].to.0.clone()));
                 link_kinds_seen.entry(root).or_default().insert(*rel);
             }
         }
@@ -397,7 +407,12 @@ impl PropertyGraph {
             })
             .collect();
 
-        clusters.sort_by(|a, b| b.members.len().cmp(&a.members.len()).then(a.members[0].0.cmp(&b.members[0].0)));
+        clusters.sort_by(|a, b| {
+            b.members
+                .len()
+                .cmp(&a.members.len())
+                .then(a.members[0].0.cmp(&b.members[0].0))
+        });
         clusters
     }
 }
@@ -425,17 +440,16 @@ impl GraphBuilder {
         self
     }
 
-    pub fn entity_with(
-        mut self,
-        kind: EntityKind,
-        external_id: impl AsRef<str>,
-        attrs: serde_json::Value,
-    ) -> Self {
+    pub fn entity_with(mut self, kind: EntityKind, external_id: impl AsRef<str>, attrs: serde_json::Value) -> Self {
         let map = match attrs {
             serde_json::Value::Object(m) => m,
             _ => serde_json::Map::new(),
         };
-        self.graph.upsert_node(Entity { id: EntityId::new(kind, external_id), kind, attrs: map });
+        self.graph.upsert_node(Entity {
+            id: EntityId::new(kind, external_id),
+            kind,
+            attrs: map,
+        });
         self
     }
 
@@ -452,7 +466,11 @@ impl GraphBuilder {
         // auto-create missing endpoints as bare nodes so ingest never fails
         for (id, kind) in [(&from, from_kind), (&to, to_kind)] {
             if self.graph.node(id).is_none() {
-                self.graph.upsert_node(Entity { id: id.clone(), kind, attrs: Default::default() });
+                self.graph.upsert_node(Entity {
+                    id: id.clone(),
+                    kind,
+                    attrs: Default::default(),
+                });
             }
         }
         let _ = self.graph.add_edge(from, rel, to);

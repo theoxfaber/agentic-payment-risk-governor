@@ -46,10 +46,7 @@ impl RazorpayGateway for Gateway {
 }
 
 fn pick_gateway() -> Arc<Gateway> {
-    match (
-        std::env::var("RAZORPAY_KEY_ID"),
-        std::env::var("RAZORPAY_KEY_SECRET"),
-    ) {
+    match (std::env::var("RAZORPAY_KEY_ID"), std::env::var("RAZORPAY_KEY_SECRET")) {
         (Ok(id), Ok(secret)) if !id.is_empty() && !secret.is_empty() => {
             tracing::info!("live Razorpay TEST-MODE gateway enabled");
             Arc::new(Gateway::Http(Arc::new(HttpGateway::new(id, secret))))
@@ -121,8 +118,7 @@ async fn submit_action(
     // synthetic one: it shares nothing in the graph → no ring hypothesis → no
     // added friction. Never fail a request just because investigation can't run.
     if context.get("customer_id").is_none() {
-        context["customer_id"] =
-            serde_json::Value::String(format!("cust_{}", body.agent_id));
+        context["customer_id"] = serde_json::Value::String(format!("cust_{}", body.agent_id));
     }
 
     let request = AgentActionRequest {
@@ -242,13 +238,14 @@ async fn approve_decision(
         reviewed_at: now_utc(),
     });
 
-    state.audit.record(
-        AuditEventType::HumanReviewed,
-        Some(decision_id),
-        serde_json::to_value(&decision.human_review)
-            .map_err(|e| ApiError::internal(e.to_string()))?,
-    )
-    .await;
+    state
+        .audit
+        .record(
+            AuditEventType::HumanReviewed,
+            Some(decision_id),
+            serde_json::to_value(&decision.human_review).map_err(|e| ApiError::internal(e.to_string()))?,
+        )
+        .await;
 
     if body.approved {
         let response = state.gateway.execute(&decision.action, decision_id).await?;
@@ -285,13 +282,22 @@ struct ApiError {
 
 impl ApiError {
     fn bad_request(message: String) -> Self {
-        Self { status: axum::http::StatusCode::BAD_REQUEST, message }
+        Self {
+            status: axum::http::StatusCode::BAD_REQUEST,
+            message,
+        }
     }
     fn not_found(id: Uuid) -> Self {
-        Self { status: axum::http::StatusCode::NOT_FOUND, message: format!("decision {id} not found") }
+        Self {
+            status: axum::http::StatusCode::NOT_FOUND,
+            message: format!("decision {id} not found"),
+        }
     }
     fn internal(message: String) -> Self {
-        Self { status: axum::http::StatusCode::INTERNAL_SERVER_ERROR, message }
+        Self {
+            status: axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            message,
+        }
     }
 }
 
@@ -303,11 +309,7 @@ impl From<ActionServiceError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        (self.status, Json(serde_json::json!({ "error": self.message }))).into_response()
     }
 }
 
@@ -315,7 +317,12 @@ impl IntoResponse for ApiError {
 // Wiring
 // ---------------------------------------------------------------------------
 
-use axum::{extract::{Path, State}, response::IntoResponse, routing::{get, post}, Json, Router};
+use axum::{
+    extract::{Path, State},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 
 /// Default graph shipped with the server: a few isolated customers sharing
 /// nothing. Unknown customer_ids land here → "no_cluster" → Unsupported
@@ -362,9 +369,7 @@ async fn seed_demo_entities(store: &InMemoryEvidenceStore) -> Result<(), anyhow:
             anomaly_flags: vec!["rapid_fire".into()],
         })
         .await;
-    store
-        .seed_default_policy_if_missing("merchant-001")
-        .await?;
+    store.seed_default_policy_if_missing("merchant-001").await?;
     Ok(())
 }
 
@@ -372,8 +377,7 @@ async fn seed_demo_entities(store: &InMemoryEvidenceStore) -> Result<(), anyhow:
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,tower=warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower=warn".into()),
         )
         .init();
 
@@ -413,10 +417,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/decisions/:id/approve", post(approve_decision))
         .with_state(state);
 
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(8080);
+    let port: u16 = std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     tracing::info!("risk governor listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;

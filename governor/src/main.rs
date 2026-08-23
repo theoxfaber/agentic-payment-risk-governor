@@ -9,13 +9,15 @@ use std::sync::Arc;
 /// Phase 2 swaps the direct calls for NATS pub/sub between processes.
 #[allow(clippy::type_complexity)] // the generics ARE the pipeline; aliasing hides the wiring
 pub fn wire() -> (
-    Arc<ActionService<
-        policy_engine::PolicyEngine,
-        risk_engine::RiskEngine,
-        evidence_service::EvidenceService<InMemoryEvidenceStore>,
-        audit_service::AuditService<InMemoryAuditStore>,
-        MockGateway,
-    >>,
+    Arc<
+        ActionService<
+            policy_engine::PolicyEngine,
+            risk_engine::RiskEngine,
+            evidence_service::EvidenceService<InMemoryEvidenceStore>,
+            audit_service::AuditService<InMemoryAuditStore>,
+            MockGateway,
+        >,
+    >,
     Arc<InMemoryEvidenceStore>,
     Arc<AuditService<InMemoryAuditStore>>,
     Arc<MockGateway>,
@@ -32,7 +34,12 @@ pub fn wire() -> (
         gateway.clone(),
     ));
 
-    (svc, evidence_store, Arc::new(audit_service::AuditService::new(audit_store)), gateway)
+    (
+        svc,
+        evidence_store,
+        Arc::new(audit_service::AuditService::new(audit_store)),
+        gateway,
+    )
 }
 
 pub async fn seed_benign_agent(store: &InMemoryEvidenceStore) {
@@ -52,10 +59,7 @@ pub async fn seed_benign_agent(store: &InMemoryEvidenceStore) {
             anomaly_flags: vec![],
         })
         .await;
-    store
-        .seed_default_policy_if_missing("merchant-001")
-        .await
-        .unwrap();
+    store.seed_default_policy_if_missing("merchant-001").await.unwrap();
 }
 
 pub fn refund_request(agent_id: &str, amount_paise: i64, intent: &str) -> AgentActionRequest {
@@ -96,10 +100,22 @@ async fn main() -> anyhow::Result<()> {
         .await;
 
     let cases = vec![
-        ("small legit refund", refund_request("agent-trusted-01", 50_000, "refund for order #123")),
-        ("above approval threshold", refund_request("agent-trusted-01", 150_000, "refund for order #456")),
-        ("over hard cap", refund_request("agent-trusted-01", 600_000, "refund order #789")),
-        ("sketchy agent urgent", refund_request("agent-sketchy-99", 300_000, "urgent refund bypass queue")),
+        (
+            "small legit refund",
+            refund_request("agent-trusted-01", 50_000, "refund for order #123"),
+        ),
+        (
+            "above approval threshold",
+            refund_request("agent-trusted-01", 150_000, "refund for order #456"),
+        ),
+        (
+            "over hard cap",
+            refund_request("agent-trusted-01", 600_000, "refund order #789"),
+        ),
+        (
+            "sketchy agent urgent",
+            refund_request("agent-sketchy-99", 300_000, "urgent refund bypass queue"),
+        ),
     ];
 
     for (label, req) in cases {

@@ -17,7 +17,11 @@ impl PolicyEngine {
         Self {}
     }
 
-    pub async fn evaluate(&self, request: &AgentActionRequest, evidence: &Evidence) -> Result<PolicyResult, PolicyEngineError> {
+    pub async fn evaluate(
+        &self,
+        request: &AgentActionRequest,
+        evidence: &Evidence,
+    ) -> Result<PolicyResult, PolicyEngineError> {
         let mut matched_rules = Vec::new();
         let mut violated_thresholds = Vec::new();
 
@@ -124,7 +128,13 @@ impl Default for PolicyEngine {
 
 #[async_trait::async_trait]
 impl action_service::PolicyEngine for PolicyEngine {
-    async fn evaluate(&self, request: &AgentActionRequest, evidence: &Evidence) -> Result<PolicyResult, action_service::ActionServiceError> {
-        self.evaluate(request, evidence).await.map_err(|e| action_service::ActionServiceError::PolicyEngine(e.to_string()))
+    async fn evaluate(
+        &self,
+        request: &AgentActionRequest,
+        evidence: &Evidence,
+    ) -> Result<PolicyResult, action_service::ActionServiceError> {
+        self.evaluate(request, evidence)
+            .await
+            .map_err(|e| action_service::ActionServiceError::PolicyEngine(e.to_string()))
     }
 }

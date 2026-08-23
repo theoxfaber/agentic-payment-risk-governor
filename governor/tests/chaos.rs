@@ -58,10 +58,11 @@ async fn remote_evidence_allow() {
     let d = svc.process_action(refund("agent-1", 50_000)).await.unwrap();
 
     assert_eq!(d.decision, DecisionOutcome::Allow);
-    assert!(d.policy_result.matched_rules.iter().all(|r| {
-        !r.starts_with("policy_engine_unavailable")
-            && !r.starts_with("evidence_service_unavailable")
-    }));
+    assert!(d
+        .policy_result
+        .matched_rules
+        .iter()
+        .all(|r| { !r.starts_with("policy_engine_unavailable") && !r.starts_with("evidence_service_unavailable") }));
 
     policy_w.abort();
     evidence_w.abort();
@@ -102,12 +103,18 @@ async fn chaos_evidence_container_kill_fails_safe() {
     }
 
     // 2) Make the kill stick: restart policy would otherwise resurrect it.
-    let _ = Command::new("docker").args(["update", "--restart=no", CONTAINER]).output();
+    let _ = Command::new("docker")
+        .args(["update", "--restart=no", CONTAINER])
+        .output();
     let killed = Command::new("docker")
         .args(["kill", "-s", "KILL", CONTAINER]) // SIGKILL: no graceful shutdown
         .output()
         .expect("docker kill failed");
-    assert!(killed.status.success(), "docker kill failed: {}", String::from_utf8_lossy(&killed.stderr));
+    assert!(
+        killed.status.success(),
+        "docker kill failed: {}",
+        String::from_utf8_lossy(&killed.stderr)
+    );
     println!("evidence container SIGKILLed mid-pipeline");
 
     // 3) Immediately fire a request. Expect fail-safe Review.
@@ -127,8 +134,12 @@ async fn chaos_evidence_container_kill_fails_safe() {
     assert!(marker_present, "degradation must be visible in the audit trail");
 
     // 4) Restore for subsequent runs.
-    let _ = Command::new("docker-compose").args(["up", "-d", "evidence-service"]).output();
-    let _ = Command::new("docker").args(["update", "--restart=unless-stopped", CONTAINER]).output();
+    let _ = Command::new("docker-compose")
+        .args(["up", "-d", "evidence-service"])
+        .output();
+    let _ = Command::new("docker")
+        .args(["update", "--restart=unless-stopped", CONTAINER])
+        .output();
 }
 
 async fn seed(store: &InMemoryEvidenceStore) {

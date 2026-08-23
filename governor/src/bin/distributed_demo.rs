@@ -40,16 +40,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let svc = wire(client);
 
-    let cases: Vec<(&str, i64)> = vec![
-        ("small legit", 50_000),
-        ("approval threshold", 150_000),
-    ];
+    let cases: Vec<(&str, i64)> = vec![("small legit", 50_000), ("approval threshold", 150_000)];
 
     for (label, amount) in cases {
-        match svc
-            .process_action(refund("agent-trusted-01", amount))
-            .await
-        {
+        match svc.process_action(refund("agent-trusted-01", amount)).await {
             Ok(d) => println!(
                 "{label}: {:?} | cid={} | policy rules={:?}",
                 d.decision, d.action.correlation_id, d.policy_result.matched_rules

@@ -26,8 +26,7 @@ use uuid::Uuid;
 
 pub const CORRELATION_HEADER: &str = "x-correlation-id";
 
-static CORRELATION_HEADER_NAME: HeaderName =
-    HeaderName::from_static("x-correlation-id");
+static CORRELATION_HEADER_NAME: HeaderName = HeaderName::from_static("x-correlation-id");
 
 task_local! {
     static CORRELATION_ID: Uuid;
@@ -79,10 +78,7 @@ pub struct CorrelationMiddleware<S> {
 
 impl<S> Service<Request<Body>> for CorrelationMiddleware<S>
 where
-    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible>
-        + Clone
-        + Send
-        + 'static,
+    S: Service<Request<Body>, Response = Response<Body>, Error = Infallible> + Clone + Send + 'static,
     S::Future: Send + 'static,
 {
     type Response = S::Response;
@@ -96,8 +92,7 @@ where
     fn call(&mut self, mut req: Request<Body>) -> Self::Future {
         let cid = extract_or_generate(req.headers());
         req.extensions_mut().insert(RequestCorrelation(cid));
-        let response_value =
-            HeaderValue::from_str(&cid.to_string()).expect("uuid is header-safe");
+        let response_value = HeaderValue::from_str(&cid.to_string()).expect("uuid is header-safe");
 
         // Ownership swap so the future is 'static without borrowing self.
         let clone = self.inner.clone();
@@ -200,8 +195,7 @@ mod tests {
         let did = Uuid::new_v4();
 
         let env = scope_correlation(cid, async {
-            Envelope::new("agent.action.requested", vec!["paise".to_string()])
-                .with_decision_id(did)
+            Envelope::new("agent.action.requested", vec!["paise".to_string()]).with_decision_id(did)
         })
         .await;
 

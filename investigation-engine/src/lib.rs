@@ -36,7 +36,11 @@ pub struct CustomerBehavior {
 
 impl CustomerBehavior {
     pub fn return_rate(&self) -> f64 {
-        if self.order_count == 0 { 0.0 } else { self.return_count as f64 / self.order_count as f64 }
+        if self.order_count == 0 {
+            0.0
+        } else {
+            self.return_count as f64 / self.order_count as f64
+        }
     }
 }
 
@@ -53,7 +57,10 @@ impl Default for Baseline {
     fn default() -> Self {
         // 2.5x, not 3x: evasion rings deliberately keep per-account rates
         // under classic thresholds; their AGGREGATE is what betrays them.
-        Self { avg_return_rate: 0.06, return_rate_anomaly_multiplier: 2.5 }
+        Self {
+            avg_return_rate: 0.06,
+            return_rate_anomaly_multiplier: 2.5,
+        }
     }
 }
 
@@ -131,9 +138,7 @@ impl InvestigationResult {
     pub fn should_hold_funds(&self) -> bool {
         match self.verdict {
             Verdict::Supported | Verdict::Conflicted => true,
-            Verdict::Unsupported => {
-                self.structurally_suspicious && self.counter_weight < 0.25
-            }
+            Verdict::Unsupported => self.structurally_suspicious && self.counter_weight < 0.25,
         }
     }
 
@@ -201,9 +206,7 @@ impl Investigator {
 
         // A payment instrument shared across unrelated accounts is itself a
         // strong signal — cards/wallets aren't shared like family laptops.
-        if cluster.link_kinds.contains(&risk_graph::RelationKind::UsesInstrument)
-            && cluster.members.len() >= 3
-        {
+        if cluster.link_kinds.contains(&risk_graph::RelationKind::UsesInstrument) && cluster.members.len() >= 3 {
             supporting.push(EvidenceItem {
                 direction: Direction::Supports,
                 signal: "shared_payment_instrument".into(),
@@ -237,8 +240,7 @@ impl Investigator {
 
         // Fresh coordinated accounts: rings mint new accounts in bursts.
         // Individually unremarkable; collectively telling.
-        let all_young = !member_behaviors.is_empty()
-            && member_behaviors.iter().all(|b| b.account_age_days < 180);
+        let all_young = !member_behaviors.is_empty() && member_behaviors.iter().all(|b| b.account_age_days < 180);
         if all_young && cluster.members.len() >= 3 {
             supporting.push(EvidenceItem {
                 direction: Direction::Supports,
@@ -270,10 +272,7 @@ impl Investigator {
                 counter.push(EvidenceItem {
                     direction: Direction::Contradicts,
                     signal: "normal_return_rates".into(),
-                    description: format!(
-                        "cluster return rate {:.0}% within normal bounds",
-                        cluster_rate * 100.0
-                    ),
+                    description: format!("cluster return rate {:.0}% within normal bounds", cluster_rate * 100.0),
                     weight: 0.2,
                 });
             }
@@ -282,12 +281,18 @@ impl Investigator {
             // coming back — classic refund-abuse shape, invisible to
             // return-rate rules. Deliberately narrow: a customer whose
             // refunds merely MATCH their legitimate returns is normal.
-            let refund_heavy = member_behaviors.iter().any(|b| {
-                b.return_count == 0 && b.refund_count >= 2 && b.order_count > 0
-            });
+            let refund_heavy = member_behaviors
+                .iter()
+                .any(|b| b.return_count == 0 && b.refund_count >= 2 && b.order_count > 0);
             let avg_refund_share = member_behaviors
                 .iter()
-                .map(|b| if b.order_count == 0 { 0.0 } else { b.refund_count as f64 / b.order_count as f64 })
+                .map(|b| {
+                    if b.order_count == 0 {
+                        0.0
+                    } else {
+                        b.refund_count as f64 / b.order_count as f64
+                    }
+                })
                 .sum::<f64>()
                 / member_behaviors.len() as f64;
             if refund_heavy {
@@ -330,7 +335,9 @@ impl Investigator {
 
             // Counter: household defense — diverse merchants/products and
             // long-established accounts look like a family, not a ring.
-            let diverse = member_behaviors.iter().all(|b| b.distinct_merchants >= 2 && b.distinct_products >= 2);
+            let diverse = member_behaviors
+                .iter()
+                .all(|b| b.distinct_merchants >= 2 && b.distinct_products >= 2);
             let established = member_behaviors.iter().any(|b| b.account_age_days > 365);
             if diverse && established {
                 counter.push(EvidenceItem {
@@ -364,7 +371,9 @@ impl Investigator {
 
         // --- confidence: how much of the picture was observable ---
         let mut confidence = 0.3f64;
-        if observed_all { confidence += 0.25; }
+        if observed_all {
+            confidence += 0.25;
+        }
         confidence += (supporting.len().min(5) as f64) * 0.05;
         confidence += (counter.len().min(3) as f64) * 0.03;
         // Incompleteness DAMPENS rather than merely fails-to-reward: strong
@@ -389,10 +398,7 @@ impl Investigator {
         let verdict = match () {
             _ if counter_weight == 0.0 && support_weight >= 0.45 => Verdict::Supported,
             _ if support_weight >= 0.6 && counter_weight < 0.25 => Verdict::Supported,
-            _ if support_weight >= 0.4
-                && counter_weight >= 0.25
-                && support_weight > counter_weight =>
-            {
+            _ if support_weight >= 0.4 && counter_weight >= 0.25 && support_weight > counter_weight => {
                 Verdict::Conflicted
             }
             _ => Verdict::Unsupported,
@@ -406,8 +412,7 @@ impl Investigator {
             missing,
             evidence_confidence: confidence,
             verdict,
-            structurally_suspicious: cluster.members.len() >= 3
-                || cluster.link_kinds.len() >= 2,
+            structurally_suspicious: cluster.members.len() >= 3 || cluster.link_kinds.len() >= 2,
             counter_weight,
             estimated_exposure_paise: exposure,
         }
@@ -421,14 +426,24 @@ fn external_of(id: &EntityId) -> Option<&str> {
 fn weighted_return_rate(bs: &[&CustomerBehavior]) -> f64 {
     let orders: u32 = bs.iter().map(|b| b.order_count).sum();
     let returns: u32 = bs.iter().map(|b| b.return_count).sum();
-    if orders == 0 { 0.0 } else { returns as f64 / orders as f64 }
+    if orders == 0 {
+        0.0
+    } else {
+        returns as f64 / orders as f64
+    }
 }
 
 fn median(v: &[f64]) -> f64 {
     let mut s: Vec<f64> = v.to_vec();
     s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = s.len();
-    if n == 0 { 0.0 } else if n % 2 == 1 { s[n / 2] } else { (s[n / 2 - 1] + s[n / 2]) / 2.0 }
+    if n == 0 {
+        0.0
+    } else if n % 2 == 1 {
+        s[n / 2]
+    } else {
+        (s[n / 2 - 1] + s[n / 2]) / 2.0
+    }
 }
 
 fn max_spread(v: &[f64]) -> f64 {
@@ -458,7 +473,12 @@ impl GraphInvestigator {
         exposure: HashMap<String, i64>,
         baseline: Baseline,
     ) -> Self {
-        Self { graph, behaviors, exposure, baseline }
+        Self {
+            graph,
+            behaviors,
+            exposure,
+            baseline,
+        }
     }
 
     pub fn into_trait(self) -> Arc<dyn action_service::Investigator> {
@@ -478,9 +498,7 @@ impl action_service::Investigator for GraphInvestigator {
             .get("customer_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
-                action_service::ActionServiceError::Validation(
-                    "investigation requires context.customer_id".into(),
-                )
+                action_service::ActionServiceError::Validation("investigation requires context.customer_id".into())
             })?;
 
         // Find clusters containing this customer (min size 2 — solo customers
@@ -530,9 +548,8 @@ impl action_service::Investigator for GraphInvestigator {
             estimated_exposure_paise: result.estimated_exposure_paise,
         };
 
-        let payload = serde_json::to_value(&result).map_err(|e| {
-            action_service::ActionServiceError::Validation(format!("investigation payload: {e}"))
-        })?;
+        let payload = serde_json::to_value(&result)
+            .map_err(|e| action_service::ActionServiceError::Validation(format!("investigation payload: {e}")))?;
 
         Ok((summary, payload))
     }

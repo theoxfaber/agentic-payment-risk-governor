@@ -5,7 +5,12 @@ use risk_graph::*;
 
 /// Ring: shared device + address + instrument, 40% return rate,
 /// everyone returns within ~24-36h of purchase.
-fn abuse_ring() -> (PropertyGraph, Cluster, HashMap<String, CustomerBehavior>, HashMap<String, i64>) {
+fn abuse_ring() -> (
+    PropertyGraph,
+    Cluster,
+    HashMap<String, CustomerBehavior>,
+    HashMap<String, i64>,
+) {
     let graph = GraphBuilder::new()
         .entity(EntityKind::Device, "DEV_1")
         .entity(EntityKind::Address, "ADR_1")
@@ -13,15 +18,69 @@ fn abuse_ring() -> (PropertyGraph, Cluster, HashMap<String, CustomerBehavior>, H
         .entity(EntityKind::Customer, "R1")
         .entity(EntityKind::Customer, "R2")
         .entity(EntityKind::Customer, "R3")
-        .relate(EntityKind::Customer, "R1", RelationKind::UsesDevice, EntityKind::Device, "DEV_1")
-        .relate(EntityKind::Customer, "R2", RelationKind::UsesDevice, EntityKind::Device, "DEV_1")
-        .relate(EntityKind::Customer, "R3", RelationKind::UsesDevice, EntityKind::Device, "DEV_1")
-        .relate(EntityKind::Customer, "R1", RelationKind::ShipsTo, EntityKind::Address, "ADR_1")
-        .relate(EntityKind::Customer, "R2", RelationKind::ShipsTo, EntityKind::Address, "ADR_1")
-        .relate(EntityKind::Customer, "R3", RelationKind::ShipsTo, EntityKind::Address, "ADR_1")
-        .relate(EntityKind::Customer, "R1", RelationKind::UsesInstrument, EntityKind::PaymentInstrument, "PIN_9")
-        .relate(EntityKind::Customer, "R2", RelationKind::UsesInstrument, EntityKind::PaymentInstrument, "PIN_9")
-        .relate(EntityKind::Customer, "R3", RelationKind::UsesInstrument, EntityKind::PaymentInstrument, "PIN_9")
+        .relate(
+            EntityKind::Customer,
+            "R1",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "DEV_1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R2",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "DEV_1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R3",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "DEV_1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R1",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "ADR_1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R2",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "ADR_1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R3",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "ADR_1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R1",
+            RelationKind::UsesInstrument,
+            EntityKind::PaymentInstrument,
+            "PIN_9",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R2",
+            RelationKind::UsesInstrument,
+            EntityKind::PaymentInstrument,
+            "PIN_9",
+        )
+        .relate(
+            EntityKind::Customer,
+            "R3",
+            RelationKind::UsesInstrument,
+            EntityKind::PaymentInstrument,
+            "PIN_9",
+        )
         .build();
 
     let cluster = &graph.abuse_ring_clusters(2)[0];
@@ -42,28 +101,70 @@ fn abuse_ring() -> (PropertyGraph, Cluster, HashMap<String, CustomerBehavior>, H
         behaviors.insert(id.into(), behavior(id));
     }
 
-    let exposure: HashMap<String, i64> =
-        [("R1", 500_000), ("R2", 400_000), ("R3", 600_000)]
-            .iter().map(|(k, v)| (k.to_string(), *v)).collect();
+    let exposure: HashMap<String, i64> = [("R1", 500_000), ("R2", 400_000), ("R3", 600_000)]
+        .iter()
+        .map(|(k, v)| (k.to_string(), *v))
+        .collect();
 
     (graph, cluster.clone(), behaviors, exposure)
 }
 
 /// Household FP trap: structurally identical clustering (shared device +
 /// address), but diverse purchases, old accounts, normal return rates.
-fn household() -> (PropertyGraph, Cluster, HashMap<String, CustomerBehavior>, HashMap<String, i64>) {
+fn household() -> (
+    PropertyGraph,
+    Cluster,
+    HashMap<String, CustomerBehavior>,
+    HashMap<String, i64>,
+) {
     let graph = GraphBuilder::new()
         .entity(EntityKind::Device, "FAM_LAPTOP")
         .entity(EntityKind::Address, "HOME")
         .entity(EntityKind::Customer, "DAD")
         .entity(EntityKind::Customer, "MOM")
         .entity(EntityKind::Customer, "KID")
-        .relate(EntityKind::Customer, "DAD", RelationKind::UsesDevice, EntityKind::Device, "FAM_LAPTOP")
-        .relate(EntityKind::Customer, "MOM", RelationKind::UsesDevice, EntityKind::Device, "FAM_LAPTOP")
-        .relate(EntityKind::Customer, "KID", RelationKind::UsesDevice, EntityKind::Device, "FAM_LAPTOP")
-        .relate(EntityKind::Customer, "DAD", RelationKind::ShipsTo, EntityKind::Address, "HOME")
-        .relate(EntityKind::Customer, "MOM", RelationKind::ShipsTo, EntityKind::Address, "HOME")
-        .relate(EntityKind::Customer, "KID", RelationKind::ShipsTo, EntityKind::Address, "HOME")
+        .relate(
+            EntityKind::Customer,
+            "DAD",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "FAM_LAPTOP",
+        )
+        .relate(
+            EntityKind::Customer,
+            "MOM",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "FAM_LAPTOP",
+        )
+        .relate(
+            EntityKind::Customer,
+            "KID",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "FAM_LAPTOP",
+        )
+        .relate(
+            EntityKind::Customer,
+            "DAD",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "HOME",
+        )
+        .relate(
+            EntityKind::Customer,
+            "MOM",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "HOME",
+        )
+        .relate(
+            EntityKind::Customer,
+            "KID",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "HOME",
+        )
         .build();
 
     let cluster = &graph.abuse_ring_clusters(2)[0];
@@ -96,7 +197,10 @@ fn coordinated_abuse_ring_is_supported() {
 
     assert_eq!(r.verdict, Verdict::Supported);
     assert!(r.supporting.iter().any(|x| x.signal == "cluster_size"));
-    assert!(r.supporting.iter().any(|x| x.signal == "multiple_shared_resource_types"));
+    assert!(r
+        .supporting
+        .iter()
+        .any(|x| x.signal == "multiple_shared_resource_types"));
     assert!(r.supporting.iter().any(|x| x.signal == "return_rate_anomaly"));
     assert!(r.supporting.iter().any(|x| x.signal == "synchronized_returns"));
     assert!(r.counter.is_empty(), "ring has no counter-evidence");
@@ -113,8 +217,10 @@ fn household_cluster_is_not_auto_escalated() {
     // The structural cluster exists, but the hypothesis must NOT be supported:
     assert_ne!(r.verdict, Verdict::Supported);
     assert!(r.counter.iter().any(|x| x.signal == "normal_return_rates"));
-    assert!(r.counter.iter().any(|x| x.signal == "household_plausible"),
-        "the household defense must be explicitly surfaced, not silently dropped");
+    assert!(
+        r.counter.iter().any(|x| x.signal == "household_plausible"),
+        "the household defense must be explicitly surfaced, not silently dropped"
+    );
 }
 
 #[test]
@@ -132,7 +238,8 @@ fn partial_behavior_data_penalizes_confidence_and_is_recorded() {
     assert!(
         r.evidence_confidence < r_full.evidence_confidence,
         "missing data must lower confidence ({} vs {})",
-        r.evidence_confidence, r_full.evidence_confidence
+        r.evidence_confidence,
+        r_full.evidence_confidence
     );
 }
 

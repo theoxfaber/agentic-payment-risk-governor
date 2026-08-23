@@ -9,23 +9,83 @@ fn ring_fixture() -> PropertyGraph {
         .entity(EntityKind::Address, "ADR_Y")
         .entity(EntityKind::PaymentInstrument, "PIN_1")
         // ring members
-        .entity_with(EntityKind::Customer, "CUST_A", serde_json::json!({"created":"2026-01-01"}))
-        .entity_with(EntityKind::Customer, "CUST_B", serde_json::json!({"created":"2026-02-01"}))
-        .entity_with(EntityKind::Customer, "CUST_C", serde_json::json!({"created":"2026-02-15"}))
+        .entity_with(
+            EntityKind::Customer,
+            "CUST_A",
+            serde_json::json!({"created":"2026-01-01"}),
+        )
+        .entity_with(
+            EntityKind::Customer,
+            "CUST_B",
+            serde_json::json!({"created":"2026-02-01"}),
+        )
+        .entity_with(
+            EntityKind::Customer,
+            "CUST_C",
+            serde_json::json!({"created":"2026-02-15"}),
+        )
         // unrelated customers
         .entity(EntityKind::Customer, "CUST_LONE")
         // merchants + payments for flavor
         .entity(EntityKind::Merchant, "MER_1")
         // links: A,B,C share device and address
-        .relate(EntityKind::Customer, "CUST_A", RelationKind::UsesDevice, EntityKind::Device, "DEV_X")
-        .relate(EntityKind::Customer, "CUST_B", RelationKind::UsesDevice, EntityKind::Device, "DEV_X")
-        .relate(EntityKind::Customer, "CUST_C", RelationKind::UsesDevice, EntityKind::Device, "DEV_X")
-        .relate(EntityKind::Customer, "CUST_A", RelationKind::ShipsTo, EntityKind::Address, "ADR_Y")
-        .relate(EntityKind::Customer, "CUST_B", RelationKind::ShipsTo, EntityKind::Address, "ADR_Y")
-        .relate(EntityKind::Customer, "CUST_C", RelationKind::ShipsTo, EntityKind::Address, "ADR_Y")
+        .relate(
+            EntityKind::Customer,
+            "CUST_A",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "DEV_X",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CUST_B",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "DEV_X",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CUST_C",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "DEV_X",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CUST_A",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "ADR_Y",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CUST_B",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "ADR_Y",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CUST_C",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "ADR_Y",
+        )
         // A also shares an instrument with B
-        .relate(EntityKind::Customer, "CUST_A", RelationKind::UsesInstrument, EntityKind::PaymentInstrument, "PIN_1")
-        .relate(EntityKind::Customer, "CUST_B", RelationKind::UsesInstrument, EntityKind::PaymentInstrument, "PIN_1")
+        .relate(
+            EntityKind::Customer,
+            "CUST_A",
+            RelationKind::UsesInstrument,
+            EntityKind::PaymentInstrument,
+            "PIN_1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CUST_B",
+            RelationKind::UsesInstrument,
+            EntityKind::PaymentInstrument,
+            "PIN_1",
+        )
         // lone customer touches nothing shared
         .build()
 }
@@ -59,15 +119,43 @@ fn transitive_join_two_hops() {
         .entity(EntityKind::Customer, "CA")
         .entity(EntityKind::Customer, "CB")
         .entity(EntityKind::Customer, "CC")
-        .relate(EntityKind::Customer, "CA", RelationKind::UsesDevice, EntityKind::Device, "D1")
-        .relate(EntityKind::Customer, "CB", RelationKind::UsesDevice, EntityKind::Device, "D1")
-        .relate(EntityKind::Customer, "CB", RelationKind::ShipsTo, EntityKind::Address, "AD1")
-        .relate(EntityKind::Customer, "CC", RelationKind::ShipsTo, EntityKind::Address, "AD1")
+        .relate(
+            EntityKind::Customer,
+            "CA",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "D1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CB",
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            "D1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CB",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "AD1",
+        )
+        .relate(
+            EntityKind::Customer,
+            "CC",
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            "AD1",
+        )
         .build();
 
     let clusters = g.abuse_ring_clusters(2);
     assert_eq!(clusters.len(), 1);
-    assert_eq!(clusters[0].members.len(), 3, "transitive resource sharing joins all three");
+    assert_eq!(
+        clusters[0].members.len(),
+        3,
+        "transitive resource sharing joins all three"
+    );
 }
 
 #[test]
@@ -118,5 +206,11 @@ fn add_edge_missing_endpoint_is_error_not_panic() {
         attrs: Default::default(),
     });
     let missing = EntityId::new(EntityKind::Device, "GHOST");
-    assert!(g.add_edge(EntityId::new(EntityKind::Customer, "X"), RelationKind::UsesDevice, missing).is_err());
+    assert!(g
+        .add_edge(
+            EntityId::new(EntityKind::Customer, "X"),
+            RelationKind::UsesDevice,
+            missing
+        )
+        .is_err());
 }

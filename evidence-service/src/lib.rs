@@ -57,7 +57,10 @@ impl InMemoryEvidenceStore {
     }
 
     pub async fn seed_customer(&self, history: CustomerHistory) {
-        self.customers.write().await.insert(history.customer_id.clone(), history);
+        self.customers
+            .write()
+            .await
+            .insert(history.customer_id.clone(), history);
     }
 
     /// Ensures a merchant has a policy so gather() never fails mid-eval.
@@ -183,7 +186,10 @@ impl<S: EvidenceStore> EvidenceService<S> {
 
 #[async_trait::async_trait]
 impl<S: EvidenceStore + 'static> action_service::EvidenceService for EvidenceService<S> {
-    async fn gather(&self, request: &AgentActionRequest) -> Result<GatheredEvidence, action_service::ActionServiceError> {
+    async fn gather(
+        &self,
+        request: &AgentActionRequest,
+    ) -> Result<GatheredEvidence, action_service::ActionServiceError> {
         self.gather(request)
             .await
             .map(GatheredEvidence::fresh)

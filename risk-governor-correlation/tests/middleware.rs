@@ -1,8 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, Response, StatusCode};
-use risk_governor_correlation::{
-    current_correlation_id, CorrelationLayer, RequestCorrelation,
-};
+use risk_governor_correlation::{current_correlation_id, CorrelationLayer, RequestCorrelation};
 use std::convert::Infallible;
 use tower::{Layer, Service, ServiceExt};
 
@@ -18,15 +16,13 @@ fn echo_service() -> tower::util::BoxCloneService<Request<Body>, Response<Body>,
 #[tokio::test]
 async fn generates_and_propagates_when_missing() {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut svc = CorrelationLayer.layer(tower::service_fn(
-        move |_req: Request<Body>| {
-            let tx = tx.clone();
-            async move {
-                tx.send(current_correlation_id()).unwrap();
-                Ok::<_, Infallible>(Response::builder().body(Body::empty()).unwrap())
-            }
-        },
-    ));
+    let mut svc = CorrelationLayer.layer(tower::service_fn(move |_req: Request<Body>| {
+        let tx = tx.clone();
+        async move {
+            tx.send(current_correlation_id()).unwrap();
+            Ok::<_, Infallible>(Response::builder().body(Body::empty()).unwrap())
+        }
+    }));
 
     let res = svc
         .ready()
@@ -37,10 +33,7 @@ async fn generates_and_propagates_when_missing() {
         .unwrap();
 
     let seen_in_handler = rx.recv().await.unwrap();
-    let echoed = res.headers()["x-correlation-id"]
-        .to_str()
-        .unwrap()
-        .to_string();
+    let echoed = res.headers()["x-correlation-id"].to_str().unwrap().to_string();
 
     assert_eq!(seen_in_handler.to_string(), echoed);
 }
@@ -50,21 +43,19 @@ async fn generates_and_propagates_when_missing() {
 async fn honors_incoming_header() {
     let incoming = uuid::Uuid::new_v4();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut svc = CorrelationLayer.layer(tower::service_fn(
-        move |req: Request<Body>| {
-            let tx = tx.clone();
-            async move {
-                // Handler reads the extension, not headers — proves insertion happened
-                let cid = req
-                    .extensions()
-                    .get::<RequestCorrelation>()
-                    .expect("extension inserted")
-                    .0;
-                tx.send((cid, current_correlation_id())).unwrap();
-                Ok::<_, Infallible>(Response::builder().body(Body::empty()).unwrap())
-            }
-        },
-    ));
+    let mut svc = CorrelationLayer.layer(tower::service_fn(move |req: Request<Body>| {
+        let tx = tx.clone();
+        async move {
+            // Handler reads the extension, not headers — proves insertion happened
+            let cid = req
+                .extensions()
+                .get::<RequestCorrelation>()
+                .expect("extension inserted")
+                .0;
+            tx.send((cid, current_correlation_id())).unwrap();
+            Ok::<_, Infallible>(Response::builder().body(Body::empty()).unwrap())
+        }
+    }));
 
     let res = svc
         .ready()

@@ -16,7 +16,11 @@ impl RiskEngine {
         Self { model_version }
     }
 
-    pub async fn score(&self, request: &AgentActionRequest, evidence: &Evidence) -> Result<RiskResult, RiskEngineError> {
+    pub async fn score(
+        &self,
+        request: &AgentActionRequest,
+        evidence: &Evidence,
+    ) -> Result<RiskResult, RiskEngineError> {
         let features = self.extract_features(request, evidence);
         let risk_score = self.calculate_risk_score(&features);
         let intent_mismatch_score = self.calculate_intent_mismatch(request, evidence);
@@ -162,7 +166,13 @@ impl Default for RiskEngine {
 
 #[async_trait::async_trait]
 impl action_service::RiskEngine for RiskEngine {
-    async fn score(&self, request: &AgentActionRequest, evidence: &Evidence) -> Result<RiskResult, action_service::ActionServiceError> {
-        self.score(request, evidence).await.map_err(|e| action_service::ActionServiceError::RiskEngine(e.to_string()))
+    async fn score(
+        &self,
+        request: &AgentActionRequest,
+        evidence: &Evidence,
+    ) -> Result<RiskResult, action_service::ActionServiceError> {
+        self.score(request, evidence)
+            .await
+            .map_err(|e| action_service::ActionServiceError::RiskEngine(e.to_string()))
     }
 }

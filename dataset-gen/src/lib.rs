@@ -72,8 +72,15 @@ pub fn baseline_of(world: &World) -> investigation_engine::Baseline {
         .collect();
     let orders: u32 = bg.iter().map(|b| b.order_count).sum();
     let returns: u32 = bg.iter().map(|b| b.return_count).sum();
-    let rate = if orders == 0 { 0.05 } else { returns as f64 / orders as f64 };
-    investigation_engine::Baseline { avg_return_rate: rate, return_rate_anomaly_multiplier: 2.5 }
+    let rate = if orders == 0 {
+        0.05
+    } else {
+        returns as f64 / orders as f64
+    };
+    investigation_engine::Baseline {
+        avg_return_rate: rate,
+        return_rate_anomaly_multiplier: 2.5,
+    }
 }
 
 pub fn generate_world(spec: WorldSpec) -> World {
@@ -113,7 +120,9 @@ pub fn generate_world(spec: WorldSpec) -> World {
             for i in 0..(spec.ring_size + 2) {
                 let id = format!("NAT{g}_{i}");
                 push_background_customer(
-                    &mut rng, &mut b, &id,
+                    &mut rng,
+                    &mut b,
+                    &id,
                     &format!("DEV_NAT{g}_{i}"),
                     &format!("ADR_NAT{g}_{i}"),
                     &format!("PIN_NAT{g}_{i}"),
@@ -125,7 +134,9 @@ pub fn generate_world(spec: WorldSpec) -> World {
             for i in 0..spec.ring_size {
                 let id = format!("POP{g}_{i}");
                 push_background_customer(
-                    &mut rng, &mut b, &id,
+                    &mut rng,
+                    &mut b,
+                    &id,
                     &popdev,
                     &format!("ADR_POP{g}_{i}"),
                     &format!("PIN_POP{g}_{i}"),
@@ -136,7 +147,9 @@ pub fn generate_world(spec: WorldSpec) -> World {
             for i in 0..spec.ring_size {
                 let id = format!("BLK{g}_{i}");
                 push_background_customer(
-                    &mut rng, &mut b, &id,
+                    &mut rng,
+                    &mut b,
+                    &id,
                     &format!("DEV_BLK{g}_{i}"),
                     &blk,
                     &format!("PIN_BLK{g}_{i}"),
@@ -148,8 +161,11 @@ pub fn generate_world(spec: WorldSpec) -> World {
     // --- abuse rings ---
     let ring_kind = matches!(
         spec.kind,
-        WorldKind::ReturnAbuse | WorldKind::RefundAbuse | WorldKind::DistributedRing
-            | WorldKind::MerchantCollusion | WorldKind::AdversarialEvasion
+        WorldKind::ReturnAbuse
+            | WorldKind::RefundAbuse
+            | WorldKind::DistributedRing
+            | WorldKind::MerchantCollusion
+            | WorldKind::AdversarialEvasion
     );
     if ring_kind {
         for r in 0..spec.n_rings {
@@ -207,9 +223,22 @@ pub fn generate_world(spec: WorldSpec) -> World {
                         continue;
                     }
                     let slip = format!("{pin}_slip{i}");
-                    b.gb = b.gb.clone()
-                        .relate(EntityKind::Customer, &members[i], RelationKind::UsesInstrument, EntityKind::PaymentInstrument, &slip)
-                        .relate(EntityKind::Customer, &members[i + 1], RelationKind::UsesInstrument, EntityKind::PaymentInstrument, &slip);
+                    b.gb =
+                        b.gb.clone()
+                            .relate(
+                                EntityKind::Customer,
+                                &members[i],
+                                RelationKind::UsesInstrument,
+                                EntityKind::PaymentInstrument,
+                                &slip,
+                            )
+                            .relate(
+                                EntityKind::Customer,
+                                &members[i + 1],
+                                RelationKind::UsesInstrument,
+                                EntityKind::PaymentInstrument,
+                                &slip,
+                            );
                 }
             }
             b.rings.push(members);
@@ -217,7 +246,11 @@ pub fn generate_world(spec: WorldSpec) -> World {
     }
 
     World {
-        name: format!("{:?}_bg{}_r{}x{}", spec.kind, spec.n_background, spec.n_rings, spec.ring_size).to_lowercase(),
+        name: format!(
+            "{:?}_bg{}_r{}x{}",
+            spec.kind, spec.n_background, spec.n_rings, spec.ring_size
+        )
+        .to_lowercase(),
         graph: b.gb.build(),
         behaviors: b.behaviors,
         exposure_paise: b.exposure,
@@ -230,14 +263,7 @@ pub fn generate_world(spec: WorldSpec) -> World {
 // Per-archetype generators (rng-seeded)
 // ---------------------------------------------------------------------------
 
-fn push_background_customer(
-    rng: &mut StdRng,
-    b: &mut Builder,
-    id: &str,
-    dev: &str,
-    adr: &str,
-    pin: &str,
-) {
+fn push_background_customer(rng: &mut StdRng, b: &mut Builder, id: &str, dev: &str, adr: &str, pin: &str) {
     let orders = rng.random_range(20..80u32);
     let returns = ((orders as f64) * rng.random_range(0.01..0.10)) as u32;
     let behavior = CustomerBehavior {
@@ -363,24 +389,54 @@ fn add_order_edges(b: &mut Builder, cust: &str, n_orders: u32) {
     for i in 0..n_orders {
         let pay = format!("{cust}_PAY{i}");
         let ord = format!("{cust}_ORD{i}");
-        b.gb = b.gb
-            .clone()
-            .entity(EntityKind::Payment, &pay)
-            .entity(EntityKind::Order, &ord)
-            .relate(EntityKind::Customer, cust, RelationKind::Made, EntityKind::Payment, &pay)
-            .relate(EntityKind::Payment, &pay, RelationKind::BelongsTo, EntityKind::Merchant, &mer_ext)
-            .relate(EntityKind::Payment, &pay, RelationKind::FulfilledOrder, EntityKind::Order, &ord);
+        b.gb =
+            b.gb.clone()
+                .entity(EntityKind::Payment, &pay)
+                .entity(EntityKind::Order, &ord)
+                .relate(
+                    EntityKind::Customer,
+                    cust,
+                    RelationKind::Made,
+                    EntityKind::Payment,
+                    &pay,
+                )
+                .relate(
+                    EntityKind::Payment,
+                    &pay,
+                    RelationKind::BelongsTo,
+                    EntityKind::Merchant,
+                    &mer_ext,
+                )
+                .relate(
+                    EntityKind::Payment,
+                    &pay,
+                    RelationKind::FulfilledOrder,
+                    EntityKind::Order,
+                    &ord,
+                );
     }
 }
 
 fn ingest_payment_to_merchant(b: &mut Builder, cust: &str, merchant: &str) {
     let pay = format!("{cust}_COLL_PAY");
-    b.gb = b.gb
-        .clone()
-        .entity(EntityKind::Payment, &pay)
-        .entity(EntityKind::Merchant, merchant)
-        .relate(EntityKind::Customer, cust, RelationKind::Made, EntityKind::Payment, &pay)
-        .relate(EntityKind::Payment, &pay, RelationKind::BelongsTo, EntityKind::Merchant, merchant);
+    b.gb =
+        b.gb.clone()
+            .entity(EntityKind::Payment, &pay)
+            .entity(EntityKind::Merchant, merchant)
+            .relate(
+                EntityKind::Customer,
+                cust,
+                RelationKind::Made,
+                EntityKind::Payment,
+                &pay,
+            )
+            .relate(
+                EntityKind::Payment,
+                &pay,
+                RelationKind::BelongsTo,
+                EntityKind::Merchant,
+                merchant,
+            );
 }
 
 // ---------------------------------------------------------------------------
@@ -418,18 +474,42 @@ impl Builder {
     }
 
     fn relate_cust_dev(&mut self, cust: &str, dev: &str) {
-        self.gb = self.gb.clone().relate(EntityKind::Customer, cust, RelationKind::UsesDevice, EntityKind::Device, dev);
+        self.gb = self.gb.clone().relate(
+            EntityKind::Customer,
+            cust,
+            RelationKind::UsesDevice,
+            EntityKind::Device,
+            dev,
+        );
     }
 
     fn relate_cust_adr(&mut self, cust: &str, adr: &str) {
-        self.gb = self.gb.clone().relate(EntityKind::Customer, cust, RelationKind::ShipsTo, EntityKind::Address, adr);
+        self.gb = self.gb.clone().relate(
+            EntityKind::Customer,
+            cust,
+            RelationKind::ShipsTo,
+            EntityKind::Address,
+            adr,
+        );
     }
 
     fn relate_cust_pin(&mut self, cust: &str, pin: &str) {
-        self.gb = self.gb.clone().relate(EntityKind::Customer, cust, RelationKind::UsesInstrument, EntityKind::PaymentInstrument, pin);
+        self.gb = self.gb.clone().relate(
+            EntityKind::Customer,
+            cust,
+            RelationKind::UsesInstrument,
+            EntityKind::PaymentInstrument,
+            pin,
+        );
     }
 
     fn relate_cust_ip(&mut self, cust: &str, ip: &str) {
-        self.gb = self.gb.clone().relate(EntityKind::Customer, cust, RelationKind::FromIp, EntityKind::IpAddress, ip);
+        self.gb = self.gb.clone().relate(
+            EntityKind::Customer,
+            cust,
+            RelationKind::FromIp,
+            EntityKind::IpAddress,
+            ip,
+        );
     }
 }

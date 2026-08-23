@@ -1,7 +1,13 @@
-use dataset_gen::{generate_world, baseline_of, WorldKind, WorldSpec};
+use dataset_gen::{baseline_of, generate_world, WorldKind, WorldSpec};
 
 fn spec(kind: WorldKind, seed: u64) -> WorldSpec {
-    WorldSpec { kind, n_background: 200, n_rings: 6, ring_size: 3, seed }
+    WorldSpec {
+        kind,
+        n_background: 200,
+        n_rings: 6,
+        ring_size: 3,
+        seed,
+    }
 }
 
 #[test]
@@ -61,9 +67,9 @@ fn return_abuse_world_structurally_recovers_rings() {
 
     // Every planted ring must appear as some cluster's members (structural recall = 1.0)
     for ring in &w.abuse_rings {
-        let found = clusters.iter().any(|c| {
-            ring.iter().all(|m| c.members.iter().any(|cm| cm.0.ends_with(m)))
-        });
+        let found = clusters
+            .iter()
+            .any(|c| ring.iter().all(|m| c.members.iter().any(|cm| cm.0.ends_with(m))));
         assert!(found, "planted ring {ring:?} not recovered as a cluster");
     }
 
@@ -95,9 +101,12 @@ fn distributed_ring_shares_instrument_only() {
             for other in ring {
                 if other != m {
                     let oid = EntityId::new(EntityKind::Customer, other);
-                    let other_devices: Vec<_> =
-                        w.graph.related_of_kind(&oid, EntityKind::Device)
-                            .iter().map(|d| d.id.0.clone()).collect();
+                    let other_devices: Vec<_> = w
+                        .graph
+                        .related_of_kind(&oid, EntityKind::Device)
+                        .iter()
+                        .map(|d| d.id.0.clone())
+                        .collect();
                     assert!(
                         devices.iter().all(|d| !other_devices.contains(d)),
                         "distributed ring members must not share devices"
@@ -124,5 +133,8 @@ fn adversarial_evasion_still_clusters_but_with_weaker_behavior() {
     let mut gaps = b.purchase_to_return_hours.clone();
     gaps.sort_by(|x, y| x.partial_cmp(y).unwrap());
     let spread = gaps.last().unwrap_or(&0.0) - gaps.first().unwrap_or(&0.0);
-    assert!(spread > 50.0, "evasion jitter should produce spread > 50h, got {spread}");
+    assert!(
+        spread > 50.0,
+        "evasion jitter should produce spread > 50h, got {spread}"
+    );
 }

@@ -61,9 +61,7 @@ impl HttpGateway {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok());
 
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                || status.is_server_error()
-            {
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 if attempt >= 3 {
                     return Ok((status, resp.json().await.unwrap_or(json!(null))));
                 }
@@ -106,7 +104,11 @@ impl HttpGateway {
     }
 
     /// Create an order in test mode (auto-capture so refunds work).
-    pub async fn create_order(&self, amount_paise: i64, receipt: &str) -> Result<serde_json::Value, ActionServiceError> {
+    pub async fn create_order(
+        &self,
+        amount_paise: i64,
+        receipt: &str,
+    ) -> Result<serde_json::Value, ActionServiceError> {
         let body = json!({
             "amount": amount_paise,
             "currency": "INR",
@@ -122,7 +124,11 @@ impl HttpGateway {
 
     /// Simulate a customer payment against an order (TEST MODE ONLY — uses
     /// Razorpay's legacy JSON payment endpoint with a test card).
-    pub async fn create_test_payment(&self, order_id: &str, amount_paise: i64) -> Result<serde_json::Value, ActionServiceError> {
+    pub async fn create_test_payment(
+        &self,
+        order_id: &str,
+        amount_paise: i64,
+    ) -> Result<serde_json::Value, ActionServiceError> {
         // form-encoded, legacy endpoint
         let email = "risk.governor@test.razorpay";
         let amount_str = amount_paise.to_string();
@@ -250,8 +256,7 @@ impl RazorpayGateway for MockGateway {
 
 /// Verify X-Razorpay-Signature: HMAC-SHA256(raw_body, webhook_secret) hex-encoded.
 pub fn verify_webhook_signature(raw_body: &[u8], signature: &str, webhook_secret: &str) -> bool {
-    let mut mac = Hmac::<Sha256>::new_from_slice(webhook_secret.as_bytes())
-        .expect("hmac accepts any key length");
+    let mut mac = Hmac::<Sha256>::new_from_slice(webhook_secret.as_bytes()).expect("hmac accepts any key length");
     mac.update(raw_body);
     let expected = hex::encode(mac.finalize().into_bytes());
     // Constant-time-ish comparison via hmac's verify, or fallback to string eq on lengths

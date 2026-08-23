@@ -60,7 +60,10 @@ impl EvaluationService {
                 Err(e) => return Err(format!("case {}: {e}", case.case_id)),
             };
 
-            let policy_result = policy.evaluate(&case.request, &evidence).await.map_err(|e| e.to_string())?;
+            let policy_result = policy
+                .evaluate(&case.request, &evidence)
+                .await
+                .map_err(|e| e.to_string())?;
             let risk_result = risk.score(&case.request, &evidence).await.map_err(|e| e.to_string())?;
 
             let outcome = combine(policy_result.verdict, risk_result.risk_score);
@@ -146,7 +149,11 @@ impl EvaluationService {
             .map_err(|e| e.to_string())?
             .ok_or("merchant policy missing")?;
         let customer_history = None;
-        let recent_velocity = self.store.velocity(&request.agent_id).await.map_err(|e| e.to_string())?;
+        let recent_velocity = self
+            .store
+            .velocity(&request.agent_id)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(Evidence {
             agent_history,
             merchant_policy,

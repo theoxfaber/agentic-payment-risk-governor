@@ -29,11 +29,7 @@ impl<S: AuditStore + 'static> WebhookConsumer<S> {
             .with_state(Arc::new(self))
     }
 
-    async fn handle(
-        State(state): State<Arc<Self>>,
-        headers: HeaderMap,
-        body: axum::body::Bytes,
-    ) -> StatusCode {
+    async fn handle(State(state): State<Arc<Self>>, headers: HeaderMap, body: axum::body::Bytes) -> StatusCode {
         // Signature verification FIRST — reject before any processing.
         let signature = match headers.get("x-razorpay-signature").and_then(|v| v.to_str().ok()) {
             Some(sig) => sig,
