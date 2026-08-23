@@ -203,3 +203,130 @@ impl<S: EvidenceStore + 'static> action_service::EvidenceService for EvidenceSer
             .map_err(|e| action_service::ActionServiceError::EvidenceService(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use risk_governor_types::{generate_correlation_id, now_utc};
+
+    fn store() -> InMemoryEvidenceStore {
+        InMemoryEvidenceStore::new()
+    }
+
+    fn agent_history(id: &str) -> AgentHistory {
+        AgentHistory {
+            agent_id: id.into(),
+            total_actions_30d: 30,
+            total_volume_30d: 1_500_000,
+            avg_amount: 50_000,
+            max_amount: 100_000,
+            refund_rate: 0.05,
+            block_rate: 0.02,
+            review_rate: 0.03,
+            first_seen: now_utc() - chrono::Duration::days(90),
+            last_action: now_utc() - chrono::Duration::hours(2),
+            action_type_distribution: Default::default(),
+            anomaly_flags: vec![],
+        }
+    }
+
+    fn request(agent: &str, merchant: &str) -> AgentActionRequest {
+        AgentActionRequest {
+            agent_id: agent.into(),
+            merchant_id: merchant.into(),
+            action_type: ActionType::Refund,
+            amount: 10_000,
+            currency: "INR".into(),
+            declared_intent: "refund".into(),
+            context: serde_json::json!({ "customer_id": "cust_1" }),
+            timestamp: now_utc(),
+            correlation_id: generate_correlation_id(),
+        }
+    }
+
+    #[tokio::test]
+    async fn seed_and_retrieve_agent_history() {
+        let s = store();
+        assert!(s.agent_history("a1").await.unwrap().is_none());
+        s.seed_agent(agent_history("a1")).await;
+        let h = s.agent_history("a1").await.unwrap().unwrap();
+        assert_eq!(h.avg_amount, 50_000);
+    }
+
+    #[tokio::test]
+    async fn seed_and_retrieve_merchant_policy() {
+        let s = store();
+        s.seed_default_policy_if_missing("m1").await.unwrap();
+        // seeding twice must not clobber an existing policy
+        s.seed_default_policy_if_missing("m1").await.unwrap();
+        let p = s.merchant_policy("m1").await.unwrap().unwrap();
+        assert_eq!(p.max_refund_amount, 500_000);
+    }
+
+    #[tokio::test]
+    async fn seed_customer_round_trips() {
+        let s = store();
+        s.seed_customer(CustomerHistory {
+            customer_id: "cust_1".into(),
+            total_transactions: 12,
+            total_volume: 120_000,
+            chargeback_count: 0,
+            refund_count: 1,
+            avg_ticket_size: 10_000,
+            first_transaction: now_utc() - chrono::Duration::days(200),
+            last_transaction: now_utc(),
+            risk_score: 0.1,
+        })
+        .await;
+        let c = s.customer_history("cust_1").await.unwrap().unwrap();
+        assert_eq!(c.total_transactions, 12);
+    }
+
+    #[tokio::test]
+    async fn record_action_updates_velocity_windows() {
+        let s = store();
+        for _ in 0..3 {
+            s.record_action(&request("a1", "m1")).await.unwrap();
+        }
+        let v = s.velocity("a1").await.unwrap();
+        assert_eq!(v.actions_last_hour, 3);
+        assert_eq!(v.actions_last_24h, 3);
+        assert_eq!(v.volume_last_hour, 30_000);
+        // other agents are isolated
+        let v2 = s.velocity("a2").await.unwrap();
+        assert_eq!(v2.actions_last_hour, 0);
+    }
+
+    #[tokio::test]
+    async fn gather_returns_error_for_unknown_agent() {
+        let s = store();
+        s.seed_default_policy_if_missing("m1").await.unwrap();
+        let err = EvidenceService::new(Arc::new(s))
+            .gather(&request("ghost", "m1"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EvidenceError::Storage(_)));
+    }
+
+    #[tokio::test]
+    async fn gather_returns_error_for_unknown_merchant() {
+        let s = store();
+        s.seed_agent(agent_history("a1")).await;
+        let err = EvidenceService::new(Arc::new(s))
+            .gather(&request("a1", "ghost"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, EvidenceError::MerchantNotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn gather_assembles_full_evidence() {
+        let s = Arc::new(store());
+        s.seed_agent(agent_history("a1")).await;
+        s.seed_default_policy_if_missing("m1").await.unwrap();
+        let ev = EvidenceService::new(s).gather(&request("a1", "m1")).await.unwrap();
+        assert_eq!(ev.agent_history.agent_id, "a1");
+        assert_eq!(ev.merchant_policy.merchant_id, "m1");
+        assert_eq!(ev.fetched_at, ev.fetched_at); // present and well-formed
+    }
+}
