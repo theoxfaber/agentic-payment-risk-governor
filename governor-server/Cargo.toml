@@ -1,0 +1,33 @@
+[package]
+name = "governor-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+risk-governor-correlation = { path = "../risk-governor-correlation" }
+action-service = { path = "../action-service" }
+policy-engine = { path = "../policy-engine" }
+risk-engine = { path = "../risk-engine" }
+evidence-service = { path = "../evidence-service" }
+audit-service = { path = "../audit-service" }
+razorpay-gateway = { path = "../razorpay-gateway" }
+nats-link = { path = "../nats-link" }
+investigation-engine = { path = "../investigation-engine" }
+dataset-gen = { path = "../dataset-gen" }
+webhook-consumer = { path = "../webhook-consumer" }
+risk-graph = { path = "../risk-graph" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+
+[[bin]]
+name = "governor-server"
+path = "src/main.rs"
