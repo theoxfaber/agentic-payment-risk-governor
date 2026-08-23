@@ -17,3 +17,8 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
+hex = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
