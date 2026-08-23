@@ -1,0 +1,8 @@
+[advisories]
+ignore = [
+    # rsa 0.9 (via sqlx-mysql) — Marvin attack, no upstream fix.
+    # We use Postgres exclusively (see docker-compose.yml: postgres:16);
+    # the MySQL driver code path is never exercised. Revisit if a fixed
+    # sqlx release drops the dependency or we add MySQL support.
+    "RUSTSEC-2023-0071",
+]
