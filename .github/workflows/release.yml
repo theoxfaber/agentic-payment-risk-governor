@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Gate the tag on the full test suite
+        run: cargo test --workspace --release
+
+      - name: Build governor-server (release)
+        run: cargo build --release -p governor-server --bin governor-server
+
+      - name: Package
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          DIR="risk-governor-${VERSION}-x86_64-unknown-linux-gnu"
+          mkdir -p "${DIR}"
+          cp target/release/governor-server "${DIR}/"
+          cp README.md CHANGELOG.md .env.example "${DIR}/"
+          tar czf "${DIR}.tar.gz" "${DIR}"
+          sha256sum "${DIR}.tar.gz" > "${DIR}.tar.gz.sha256"
+
+      - name: Create GitHub release with notes from CHANGELOG
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          # Extract the section for this version from the changelog; fall back
+          # to the tag name if absent.
+          NOTES=$(awk -v ver="${VERSION#v}" '/^## \[/{flag=0} /^## \["?'"${VERSION#v}"'"\]?/{flag=1} flag' CHANGELOG.md)
+          [ -z "$NOTES" ] && NOTES="Release ${VERSION}"
+          gh release create "$VERSION" \
+            --title "Risk Governor ${VERSION}" \
+            --notes "$NOTES" \
+            risk-governor-${VERSION}-x86_64-unknown-linux-gnu.tar.gz \
+            risk-governor-${VERSION}-x86_64-unknown-linux-gnu.tar.gz.sha256
