@@ -77,6 +77,46 @@ struct AppState {
     /// Every decision served, keyed by decision_id — the review queue reads
     /// from here, replay reads the immutable trail from the audit store.
     decisions: RwLock<HashMap<Uuid, Decision>>,
+    metrics: Arc<Metrics>,
+}
+
+/// Counters exposed at /metrics in Prometheus text format.
+#[derive(Default)]
+struct Metrics {
+    decisions_allow: std::sync::atomic::AtomicU64,
+    decisions_review: std::sync::atomic::AtomicU64,
+    decisions_block: std::sync::atomic::AtomicU64,
+    gateway_executions: std::sync::atomic::AtomicU64,
+}
+
+impl Metrics {
+    fn record(&self, outcome: DecisionOutcome) {
+        use std::sync::atomic::Ordering::Relaxed;
+        match outcome {
+            DecisionOutcome::Allow => self.decisions_allow.fetch_add(1, Relaxed),
+            DecisionOutcome::Review => self.decisions_review.fetch_add(1, Relaxed),
+            DecisionOutcome::Block => self.decisions_block.fetch_add(1, Relaxed),
+        };
+    }
+
+    fn prometheus(&self) -> String {
+        use std::sync::atomic::Ordering::Relaxed;
+        let load = |c: &std::sync::atomic::AtomicU64| c.load(Relaxed).to_string();
+        format!(
+            "# HELP risk_governor_decisions_total Decisions by outcome.\n\
+             # TYPE risk_governor_decisions_total counter\n\
+             risk_governor_decisions_total{{outcome=\"allow\"}} {}\n\
+             risk_governor_decisions_total{{outcome=\"review\"}} {}\n\
+             risk_governor_decisions_total{{outcome=\"block\"}} {}\n\
+             # HELP risk_governor_gateway_executions_total Money-movement calls fired at the gateway (ALLOW decisions + approved reviews).\n\
+             # TYPE risk_governor_gateway_executions_total counter\n\
+             risk_governor_gateway_executions_total {}\n",
+            load(&self.decisions_allow),
+            load(&self.decisions_review),
+            load(&self.decisions_block),
+            load(&self.gateway_executions),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +125,14 @@ struct AppState {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Prometheus text exposition of decision counters.
+async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        state.metrics.prometheus(),
+    )
 }
 
 /// The dashboard IS the product demo — root serves it directly.
@@ -136,6 +184,14 @@ async fn submit_action(
     action_service::validate_request(&request)?;
 
     let decision = state.svc.process_action(request).await?;
+    state.metrics.record(decision.decision);
+    // Every ALLOW fired one money-movement call inside process_action.
+    if decision.decision == DecisionOutcome::Allow {
+        state
+            .metrics
+            .gateway_executions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     state
         .decisions
         .write()
@@ -248,6 +304,10 @@ async fn approve_decision(
         .await;
 
     if body.approved {
+        state
+            .metrics
+            .gateway_executions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let response = state.gateway.execute(&decision.action, decision_id).await?;
         state
             .audit
@@ -275,6 +335,7 @@ async fn approve_decision(
 // Errors
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct ApiError {
     status: axum::http::StatusCode,
     message: String,
@@ -375,11 +436,15 @@ async fn seed_demo_entities(store: &InMemoryEvidenceStore) -> Result<(), anyhow:
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower=warn".into()),
-        )
-        .init();
+    // Structured JSON logs when RUST_LOG_FORMAT=json (production collectors);
+    // human-readable single-line otherwise (local dev).
+    let format_json = std::env::var("RUST_LOG_FORMAT").as_deref() == Ok("json");
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,tower=warn".into());
+    if format_json {
+        tracing_subscriber::fmt().json().with_env_filter(filter).init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     let evidence_store = Arc::new(InMemoryEvidenceStore::new());
     seed_demo_entities(&evidence_store).await?;
@@ -405,12 +470,14 @@ async fn main() -> anyhow::Result<()> {
         audit: Arc::new(AuditService::new(audit_store)),
         gateway,
         decisions: RwLock::new(HashMap::new()),
+        metrics: Arc::new(Metrics::default()),
     });
 
     let app = Router::new()
         .route("/", get(dashboard_page))
         .route("/dashboard", get(dashboard_page))
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/v1/actions", post(submit_action))
         .route("/v1/decisions", get(list_decisions))
         .route("/v1/decisions/:id", get(replay_decision))
@@ -423,4 +490,106 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::extract::State;
+
+    async fn test_state() -> Arc<AppState> {
+        let evidence_store = Arc::new(InMemoryEvidenceStore::new());
+        seed_demo_entities(&evidence_store).await.unwrap();
+        let audit_store = Arc::new(InMemoryAuditStore::new());
+        let gateway = Arc::new(Gateway::Mock(Arc::new(MockGateway::default())));
+        let (graph, behaviors) = default_graph_and_behaviors();
+        let investigator = GraphInvestigator::new(graph, behaviors, HashMap::new(), Baseline::default());
+        let svc = Arc::new(
+            ActionService::new(
+                Arc::new(policy_engine::PolicyEngine::new()),
+                Arc::new(risk_engine::RiskEngine::default()),
+                Arc::new(EvidenceService::new(evidence_store)),
+                Arc::new(AuditService::new(audit_store.clone())),
+                gateway.clone(),
+            )
+            .with_investigator(investigator.into_trait()),
+        );
+        Arc::new(AppState {
+            svc,
+            audit: Arc::new(AuditService::new(audit_store)),
+            gateway,
+            decisions: RwLock::new(HashMap::new()),
+            metrics: Arc::new(Metrics::default()),
+        })
+    }
+
+    fn submit_body(agent: &str, amount: i64) -> Json<SubmitAction> {
+        Json(SubmitAction {
+            agent_id: agent.into(),
+            merchant_id: "merchant-001".into(),
+            action_type: ActionType::Refund,
+            amount,
+            currency: Some("INR".into()),
+            declared_intent: "refund for order #1".into(),
+            context: serde_json::json!({}),
+        })
+    }
+
+    #[tokio::test]
+    async fn metrics_counters_track_decision_outcomes() {
+        let state = test_state().await;
+        // trusted agent, small amount → allow
+        submit_action(State(state.clone()), submit_body("agent-trusted-01", 50_000))
+            .await
+            .unwrap();
+        // trusted agent above approval threshold → review
+        submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
+            .await
+            .unwrap();
+        // over hard cap → block
+        submit_action(State(state.clone()), submit_body("agent-trusted-01", 600_000))
+            .await
+            .unwrap();
+
+        let body = state.metrics.prometheus();
+        assert!(body.contains("risk_governor_decisions_total{outcome=\"allow\"} 1"));
+        assert!(body.contains("risk_governor_decisions_total{outcome=\"review\"} 1"));
+        assert!(body.contains("risk_governor_decisions_total{outcome=\"block\"} 1"));
+        // ALLOW fired one gateway execution; the review was not approved
+        assert!(body.contains("risk_governor_gateway_executions_total 1"));
+    }
+
+    #[tokio::test]
+    async fn approval_execution_increments_gateway_counter() {
+        let state = test_state().await;
+        let decision = submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
+            .await
+            .unwrap();
+        assert_eq!(decision.decision, DecisionOutcome::Review);
+
+        approve_decision(
+            State(state.clone()),
+            Path(decision.decision_id),
+            Json(ApproveBody {
+                approved: true,
+                reviewer_id: "analyst-test".into(),
+                notes: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(state
+            .metrics
+            .prometheus()
+            .contains("risk_governor_gateway_executions_total 1"));
+    }
+
+    #[tokio::test]
+    async fn health_and_metrics_handlers_respond() {
+        let state = test_state().await;
+        assert_eq!(health().await, "ok");
+        let resp = metrics(State(state)).await.into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
 }
