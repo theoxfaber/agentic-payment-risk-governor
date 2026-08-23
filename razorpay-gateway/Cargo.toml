@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 risk-governor-types = { path = "../risk-governor-types" }
 action-service = { path = "../action-service" }
+risk-governor-correlation = { path = "../risk-governor-correlation" }
 async-trait = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
@@ -14,3 +15,8 @@ uuid = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }

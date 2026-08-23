@@ -44,13 +44,11 @@ impl PolicyEngine {
                     ));
                 }
             }
-            ActionType::PaymentLink => {
-                if request.amount > policy.max_payment_link_amount {
-                    violated_thresholds.push(format!(
-                        "payment link amount {} exceeds max {}",
-                        request.amount, policy.max_payment_link_amount
-                    ));
-                }
+            ActionType::PaymentLink if request.amount > policy.max_payment_link_amount => {
+                violated_thresholds.push(format!(
+                    "payment link amount {} exceeds max {}",
+                    request.amount, policy.max_payment_link_amount
+                ));
             }
             _ => {}
         }

@@ -294,9 +294,11 @@ where
             DecisionOutcome::Review
         } else if high_risk {
             DecisionOutcome::Block
-        } else if contradicted || !extra_rules.is_empty() {
-            DecisionOutcome::Review
-        } else if needs_review || risk_result.risk_score >= 0.5 {
+        } else if contradicted
+            || !extra_rules.is_empty()
+            || needs_review
+            || risk_result.risk_score >= 0.5
+        {
             DecisionOutcome::Review
         } else {
             DecisionOutcome::Allow

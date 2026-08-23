@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use investigation_engine::*;
 use risk_graph::*;

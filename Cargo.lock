@@ -849,6 +849,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "governor-server"
+version = "0.1.0"
+dependencies = [
+ "action-service",
+ "anyhow",
+ "async-trait",
+ "audit-service",
+ "axum",
+ "chrono",
+ "dataset-gen",
+ "evidence-service",
+ "investigation-engine",
+ "nats-link",
+ "policy-engine",
+ "razorpay-gateway",
+ "risk-engine",
+ "risk-governor-correlation",
+ "risk-governor-types",
+ "risk-graph",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webhook-consumer",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1869,13 +1898,16 @@ name = "razorpay-gateway"
 version = "0.1.0"
 dependencies = [
  "action-service",
+ "anyhow",
  "async-trait",
  "hex",
  "hmac",
  "reqwest",
+ "risk-governor-correlation",
  "risk-governor-types",
  "serde_json",
  "sha2",
+ "tokio",
  "tracing",
  "uuid",
 ]

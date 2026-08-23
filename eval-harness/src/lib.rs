@@ -13,7 +13,7 @@
 //!      Unsupported → clear.
 
 use dataset_gen::{baseline_of, World};
-use investigation_engine::{Investigator, Verdict};
+use investigation_engine::Investigator;
 use serde::Serialize;
 use std::collections::HashMap;
 

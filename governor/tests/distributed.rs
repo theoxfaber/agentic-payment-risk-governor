@@ -4,13 +4,14 @@
 
 use action_service::ActionService;
 use audit_service::{AuditService, InMemoryAuditStore};
-use evidence_service::{EvidenceStore, InMemoryEvidenceStore};
+use evidence_service::InMemoryEvidenceStore;
 use nats_link::NatsPolicyEngine;
 use razorpay_gateway::MockGateway;
 use risk_governor_types::*;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[allow(dead_code)]
 type Svc = ActionService<
     NatsPolicyEngine,
     risk_engine::RiskEngine,

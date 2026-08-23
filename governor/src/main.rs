@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 /// Wires the full in-process pipeline (Phase 1 vertical slice).
 /// Phase 2 swaps the direct calls for NATS pub/sub between processes.
+#[allow(clippy::type_complexity)] // the generics ARE the pipeline; aliasing hides the wiring
 pub fn wire() -> (
     Arc<ActionService<
         policy_engine::PolicyEngine,

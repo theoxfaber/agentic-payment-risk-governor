@@ -11,7 +11,6 @@ use razorpay_gateway::MockGateway;
 use risk_governor_types::*;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Test stubs
@@ -158,6 +157,7 @@ fn supported_behaviors() -> HashMap<String, CustomerBehavior> {
         .collect()
 }
 
+#[allow(clippy::type_complexity)] // test fixture wiring; the generics ARE the pipeline
 fn wire(
     risk_score: f64,
     investigator: Option<Arc<dyn Investigator>>,

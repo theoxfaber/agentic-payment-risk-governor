@@ -94,7 +94,7 @@ pub struct CustomerHistory {
     pub risk_score: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct VelocityStats {
     pub actions_last_hour: u32,
     pub volume_last_hour: i64,
@@ -203,19 +203,6 @@ pub struct ReplaySnapshot {
     pub audit_trail: Vec<AuditRecord>,
 }
 
-impl Default for VelocityStats {
-    fn default() -> Self {
-        Self {
-            actions_last_hour: 0,
-            volume_last_hour: 0,
-            actions_last_24h: 0,
-            volume_last_24h: 0,
-            unique_merchants_24h: 0,
-            unique_customers_24h: 0,
-        }
-    }
-}
-
 /// Wire format: what action-service sends to the policy-engine worker.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyEvaluateJob {
@@ -226,6 +213,9 @@ pub struct PolicyEvaluateJob {
 /// Reply payload for evidence.gather — distinguishes transport-degraded
 /// (handled by the caller as fail-safe) from application-level NotFound
 /// (fail closed with a real error).
+// Wire enum: Evidence is big but the NotFound path is rare — boxing would
+// complicate every producer for no measurable gain.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EvidenceOutcome {
     Ready(Evidence),
