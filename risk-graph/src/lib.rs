@@ -481,3 +481,198 @@ impl GraphBuilder {
         self.graph
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn customer(ext: &str) -> EntityId {
+        EntityId::new(EntityKind::Customer, ext)
+    }
+
+    #[test]
+    fn upsert_node_inserts_new_entity() {
+        let mut g = PropertyGraph::new();
+        assert_eq!(g.node_count(), 0);
+        g.upsert_node(Entity {
+            id: customer("c1"),
+            kind: EntityKind::Customer,
+            attrs: Default::default(),
+        });
+        assert_eq!(g.node_count(), 1);
+        assert!(g.node(&customer("c1")).is_some());
+    }
+
+    #[test]
+    fn upsert_node_merges_attrs_keeps_existing_on_conflict_free_merge() {
+        use serde_json::json;
+        let mut g = PropertyGraph::new();
+        let mut attrs = serde_json::Map::new();
+        attrs.insert("tier".into(), json!("gold"));
+        g.upsert_node(Entity {
+            id: customer("c1"),
+            kind: EntityKind::Customer,
+            attrs,
+        });
+        // second upsert with different attr — merge keeps both
+        let mut more = serde_json::Map::new();
+        more.insert("region".into(), json!("IN"));
+        g.upsert_node(Entity {
+            id: customer("c1"),
+            kind: EntityKind::Customer,
+            attrs: more,
+        });
+        let node = g.node(&customer("c1")).unwrap();
+        assert_eq!(g.node_count(), 1);
+        assert_eq!(node.attrs.get("tier"), Some(&json!("gold")));
+        assert_eq!(node.attrs.get("region"), Some(&json!("IN")));
+    }
+
+    #[test]
+    fn add_edge_rejects_missing_endpoint() {
+        let mut g = PropertyGraph::new();
+        g.upsert_node(Entity {
+            id: customer("c1"),
+            kind: EntityKind::Customer,
+            attrs: Default::default(),
+        });
+        let missing = EntityId::new(EntityKind::Device, "d9");
+        let err = g
+            .add_edge(customer("c1"), RelationKind::UsesDevice, missing)
+            .unwrap_err();
+        assert!(matches!(err, GraphError::MissingEndpoint(_)));
+        assert_eq!(g.edge_count(), 0);
+    }
+
+    #[test]
+    fn add_edge_connects_existing_nodes() {
+        let mut b = GraphBuilder::new()
+            .entity(EntityKind::Customer, "c1")
+            .entity(EntityKind::Device, "d1");
+        let mut g = std::mem::take(&mut b.graph); // exercise raw add_edge path
+        g.add_edge(
+            customer("c1"),
+            RelationKind::UsesDevice,
+            EntityId::new(EntityKind::Device, "d1"),
+        )
+        .unwrap();
+        assert_eq!(g.edge_count(), 1);
+        assert_eq!(g.neighbors(&customer("c1")).len(), 1);
+    }
+
+    #[test]
+    fn neighbors_returns_both_directions() {
+        let g = GraphBuilder::new()
+            .relate(
+                EntityKind::Customer,
+                "c1",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "d1",
+            )
+            .build();
+        let device_id = EntityId::new(EntityKind::Device, "d1");
+        let from_customer = g.neighbors(&customer("c1"));
+        let from_device = g.neighbors(&device_id);
+        assert!(from_customer.iter().any(|(_, _, dir)| *dir == Direction::Outgoing));
+        assert!(from_device.iter().any(|(_, _, dir)| *dir == Direction::Incoming));
+    }
+
+    #[test]
+    fn abuse_ring_clusters_groups_shared_device() {
+        let g = GraphBuilder::new()
+            .entity(EntityKind::Device, "D")
+            .entity(EntityKind::Customer, "R1")
+            .entity(EntityKind::Customer, "R2")
+            .relate(
+                EntityKind::Customer,
+                "R1",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R2",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .build();
+        let clusters = g.abuse_ring_clusters(2);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].members.len(), 2);
+        assert!(clusters[0].members.contains(&customer("R1")));
+        assert!(clusters[0].members.contains(&customer("R2")));
+        assert_eq!(clusters[0].link_kinds, vec![RelationKind::UsesDevice]);
+    }
+
+    #[test]
+    fn abuse_ring_clusters_respects_min_size() {
+        // Two customers share a device; min_size=3 must filter the pair out.
+        let g = GraphBuilder::new()
+            .entity(EntityKind::Device, "D")
+            .entity(EntityKind::Customer, "A")
+            .entity(EntityKind::Customer, "B")
+            .relate(
+                EntityKind::Customer,
+                "A",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "B",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .build();
+        assert!(g.abuse_ring_clusters(3).is_empty());
+        assert_eq!(g.abuse_ring_clusters(2).len(), 1);
+    }
+
+    #[test]
+    fn unrelated_customers_stay_separate() {
+        let g = GraphBuilder::new()
+            .entity(EntityKind::Device, "D1")
+            .entity(EntityKind::Device, "D2")
+            .entity(EntityKind::Customer, "X")
+            .entity(EntityKind::Customer, "Y")
+            .relate(
+                EntityKind::Customer,
+                "X",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D1",
+            )
+            .relate(
+                EntityKind::Customer,
+                "Y",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D2",
+            )
+            .build();
+        assert!(g.abuse_ring_clusters(2).is_empty());
+    }
+
+    #[test]
+    fn graph_builder_auto_creates_endpoints() {
+        // relate() with no prior entity() calls must not lose the edge.
+        let g = GraphBuilder::new()
+            .relate(
+                EntityKind::Customer,
+                "solo",
+                RelationKind::UsesInstrument,
+                EntityKind::PaymentInstrument,
+                "PIN",
+            )
+            .build();
+        assert_eq!(g.node_count(), 2);
+        assert_eq!(g.edge_count(), 1);
+        assert!(g.node(&customer("solo")).is_some());
+        assert!(g.node(&EntityId::new(EntityKind::PaymentInstrument, "PIN")).is_some());
+    }
+}
