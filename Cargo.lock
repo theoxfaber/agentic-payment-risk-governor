@@ -858,6 +858,7 @@ dependencies = [
  "audit-service",
  "axum",
  "chrono",
+ "dashboard",
  "dataset-gen",
  "evidence-service",
  "investigation-engine",

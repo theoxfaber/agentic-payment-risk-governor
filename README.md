@@ -95,52 +95,56 @@ Single-thesis Rust workspace; each crate is a clean module of one pipeline:
 | `investigation-engine` | Evidence reasoning: confidence, contradiction, verdicts |
 | `evidence-service` | Agent history store |
 | `audit-service` / `risk-governor-replay` | Decision trail + replay |
+| `dashboard` | One-page live decision stream, replay viewer, human-approval UI (vanilla JS, no build step) |
 | `razorpay-gateway` | Test-mode HTTP client (basic auth, retry/backoff on 429/5xx) + mock for offline runs |
 | `nats-link` | Distributed mode (pipeline split across processes via NATS) |
 | `dataset-gen` / `eval-harness` | Labeled synthetic worlds + precision/recall/cost eval |
-| `governor-server` | Unified axum binary exposing the pipeline as an API |
+| `governor-server` | Unified axum binary: decision API + replay + approval + dashboard at `/` |
 | `webhook-consumer`, `dashboard`, `evaluation-service`, `infra-probe` | Supporting services |
 
 ## Run it
 
-### 1. The API server (flagship)
+### 1. The API server + live dashboard (flagship)
 
 ```bash
-cargo run -p governor-server --bin governor-server   # http://127.0.0.1:8080
+cargo run -p governor-server --bin governor-server
+# → open http://127.0.0.1:8080
 ```
 
-Full decision pipeline — policy, risk scoring, entity-graph investigation,
-audit trail — behind one HTTP surface. Gateway auto-selects: set
-`RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET` for live test-mode calls, otherwise a
-mock gateway records intent and moves no money.
+The dashboard at the root URL is a real-time view of the governor in action:
+a live decision stream (polls every 2s), aggregate stats including **blocked
+value prevented**, and click-through to full decision replay — what the
+governor saw, why it decided, the complete audit-trail timeline. REVIEW
+decisions surface an inline human-approval box; approving executes the held
+action against the gateway, right there.
+
+Drive it from another terminal (or watch the stream fill up):
 
 ```bash
-# Submit an agent action → get ALLOW / REVIEW / BLOCK
+# Normal refund → ALLOW
 curl -s -X POST localhost:8080/v1/actions \
   -H 'content-type: application/json' \
   -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001",
        "action_type":"refund","amount":50000,
        "declared_intent":"refund for order #123"}'
-# → {"decision":"allow", ...}
 
+# Above approval threshold → REVIEW (approve it in the dashboard)
 curl -s -X POST localhost:8080/v1/actions \
   -H 'content-type: application/json' \
   -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001",
        "action_type":"refund","amount":150000,
        "declared_intent":"refund for order #456"}'
-# → {"decision":"review", ...}  (above approval threshold)
 
-# Full replay: what the governor saw + every evaluation it ran
-curl -s localhost:8080/v1/decisions/{id}
-
-# Resolve the review queue — approval executes against the gateway
-curl -s -X POST localhost:8080/v1/decisions/{id}/approve \
+# Over hard cap → BLOCK
+curl -s -X POST localhost:8080/v1/actions \
   -H 'content-type: application/json' \
-  -d '{"approved":true,"reviewer_id":"analyst-7","notes":"verified order"}'
-
-# Decision stream
-curl -s localhost:8080/v1/decisions
+  -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001",
+       "action_type":"refund","amount":600000,
+       "declared_intent":"refund order #789"}'
 ```
+
+Gateway auto-selects: set `RAZORPAY_KEY_ID`/`RAZORPAY_KEY_SECRET` for live
+test-mode calls, otherwise a mock gateway records intent and moves no money.
 
 The audit trail for one decision reads as the full lifecycle:
 

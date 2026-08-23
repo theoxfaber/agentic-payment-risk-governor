@@ -17,6 +17,7 @@ investigation-engine = { path = "../investigation-engine" }
 dataset-gen = { path = "../dataset-gen" }
 webhook-consumer = { path = "../webhook-consumer" }
 risk-graph = { path = "../risk-graph" }
+dashboard = { path = "../dashboard" }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

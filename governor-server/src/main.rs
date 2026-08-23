@@ -90,6 +90,11 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// The dashboard IS the product demo — root serves it directly.
+async fn dashboard_page() -> axum::response::Html<&'static str> {
+    axum::response::Html(dashboard::page())
+}
+
 /// Wire format for submissions: caller supplies business fields, server owns
 /// timestamps/correlation IDs.
 #[derive(serde::Deserialize)]
@@ -155,6 +160,7 @@ async fn list_decisions(State(state): State<Arc<AppState>>) -> Json<serde_json::
             "amount": d.action.amount,
             "decision": d.decision,
             "risk_score": d.risk_result.risk_score,
+            "human_decision": d.human_review.as_ref().map(|h| h.decision),
             "created_at": d.created_at,
         }))
         .collect::<Vec<_>>()))
@@ -398,6 +404,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = Router::new()
+        .route("/", get(dashboard_page))
+        .route("/dashboard", get(dashboard_page))
         .route("/health", get(health))
         .route("/v1/actions", post(submit_action))
         .route("/v1/decisions", get(list_decisions))
