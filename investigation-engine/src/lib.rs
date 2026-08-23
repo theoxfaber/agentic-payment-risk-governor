@@ -554,3 +554,272 @@ impl action_service::Investigator for GraphInvestigator {
         Ok((summary, payload))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use risk_graph::{GraphBuilder, RelationKind};
+
+    /// 3 customers sharing device + address; 2 of them also share an
+    /// instrument. link_kinds = 3, structurally maximally suspicious.
+    fn ring_cluster() -> Cluster {
+        let g = GraphBuilder::new()
+            .entity(EntityKind::Device, "D")
+            .entity(EntityKind::Address, "A")
+            .entity(EntityKind::PaymentInstrument, "PIN")
+            .entity(EntityKind::Customer, "R1")
+            .entity(EntityKind::Customer, "R2")
+            .entity(EntityKind::Customer, "R3")
+            .relate(
+                EntityKind::Customer,
+                "R1",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R1",
+                RelationKind::ShipsTo,
+                EntityKind::Address,
+                "A",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R2",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R2",
+                RelationKind::ShipsTo,
+                EntityKind::Address,
+                "A",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R3",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R3",
+                RelationKind::ShipsTo,
+                EntityKind::Address,
+                "A",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R1",
+                RelationKind::UsesInstrument,
+                EntityKind::PaymentInstrument,
+                "PIN",
+            )
+            .relate(
+                EntityKind::Customer,
+                "R2",
+                RelationKind::UsesInstrument,
+                EntityKind::PaymentInstrument,
+                "PIN",
+            )
+            .build();
+        let id = EntityId::new(EntityKind::Customer, "R1");
+        g.abuse_ring_clusters(2)
+            .into_iter()
+            .find(|c| c.members.contains(&id))
+            .expect("ring exists")
+    }
+
+    fn behavior(id: &str, order: u32, rets: u32, merchants: u32, products: u32, age_days: u64) -> CustomerBehavior {
+        CustomerBehavior {
+            customer_id: id.into(),
+            order_count: order,
+            return_count: rets,
+            refund_count: rets,
+            dispute_count: 0,
+            distinct_merchants: merchants,
+            distinct_products: products,
+            account_age_days: age_days,
+            purchase_to_return_hours: vec![],
+        }
+    }
+
+    fn behaviors(entries: &[(&str, u32, u32, u32, u32, u64)]) -> HashMap<String, CustomerBehavior> {
+        entries
+            .iter()
+            .map(|(id, o, r, m, p, a)| (id.to_string(), behavior(id, *o, *r, *m, *p, *a)))
+            .collect()
+    }
+
+    #[test]
+    fn supported_verdict_on_strong_evidence() {
+        // Pure ring shape: young accounts, concentrated purchasing, 42%
+        // weighted return rate vs 15% anomaly threshold.
+        let b = behaviors(&[
+            ("R1", 12, 5, 1, 1, 15),
+            ("R2", 12, 5, 1, 1, 15),
+            ("R3", 12, 5, 1, 1, 15),
+        ]);
+        let inv = Investigator::new(Baseline::default());
+        let result =
+            inv.investigate_return_abuse(&risk_graph::PropertyGraph::new(), &ring_cluster(), &b, &HashMap::new());
+        assert_eq!(result.verdict, Verdict::Supported);
+        assert!(result.structurally_suspicious);
+        assert_eq!(result.counter_weight, 0.0);
+    }
+
+    #[test]
+    fn conflicted_verdict_on_mixed_evidence() {
+        // High returns BUT household diversity + long history: evidence
+        // leans toward the hypothesis yet real counter-evidence exists.
+        let b = behaviors(&[
+            ("R1", 30, 9, 6, 11, 800),
+            ("R2", 30, 9, 6, 11, 800),
+            ("R3", 30, 9, 6, 11, 800),
+        ]);
+        let inv = Investigator::new(Baseline::default());
+        let result =
+            inv.investigate_return_abuse(&risk_graph::PropertyGraph::new(), &ring_cluster(), &b, &HashMap::new());
+        assert_eq!(result.verdict, Verdict::Conflicted);
+        assert!(result.requires_human(), "conflicted must go to a human");
+    }
+
+    #[test]
+    fn unsupported_verdict_clears_innocent_pair() {
+        // Two established accounts sharing one device, normal return rates:
+        // a household, not a ring.
+        let mut b = behaviors(&[("H1", 40, 1, 5, 7, 900), ("H2", 40, 1, 5, 7, 900)]);
+        b.get_mut("H2").unwrap().purchase_to_return_hours = vec![];
+        let g = GraphBuilder::new()
+            .entity(EntityKind::Device, "D")
+            .entity(EntityKind::Customer, "H1")
+            .entity(EntityKind::Customer, "H2")
+            .relate(
+                EntityKind::Customer,
+                "H1",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "H2",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .build();
+        let cluster = g.abuse_ring_clusters(2).remove(0);
+        let inv = Investigator::new(Baseline::default());
+        let result = inv.investigate_return_abuse(&risk_graph::PropertyGraph::new(), &cluster, &b, &HashMap::new());
+        assert_eq!(result.verdict, Verdict::Unsupported);
+        assert!(!result.structurally_suspicious);
+        assert!(!result.should_hold_funds());
+    }
+
+    #[test]
+    fn should_hold_funds_on_supported_and_conflicted() {
+        let mut r = InvestigationResult {
+            hypothesis: HypothesisKind::CoordinatedReturnAbuse,
+            cluster_members: vec![],
+            supporting: vec![],
+            counter: vec![],
+            missing: vec![],
+            evidence_confidence: 0.9,
+            verdict: Verdict::Supported,
+            structurally_suspicious: true,
+            counter_weight: 0.0,
+            estimated_exposure_paise: 0,
+        };
+        assert!(r.should_hold_funds());
+        r.verdict = Verdict::Conflicted;
+        assert!(r.should_hold_funds());
+        assert!(r.requires_human());
+    }
+
+    #[test]
+    fn unsupported_structural_no_counter_holds_for_human() {
+        // THE ADVERSARIAL-EVASION EDGE CASE: structurally-linked pair whose
+        // behavioral investigation finds only "normal" rates. Not exonerated
+        // — absence of contradiction is not absence of risk. Held, by a human.
+        let b = behaviors(&[("E1", 20, 1, 1, 1, 30), ("E2", 20, 1, 1, 1, 30)]);
+        let g = GraphBuilder::new()
+            .entity(EntityKind::Device, "D")
+            .entity(EntityKind::Address, "A")
+            .entity(EntityKind::Customer, "E1")
+            .entity(EntityKind::Customer, "E2")
+            .relate(
+                EntityKind::Customer,
+                "E1",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "E1",
+                RelationKind::ShipsTo,
+                EntityKind::Address,
+                "A",
+            )
+            .relate(
+                EntityKind::Customer,
+                "E2",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "D",
+            )
+            .relate(
+                EntityKind::Customer,
+                "E2",
+                RelationKind::ShipsTo,
+                EntityKind::Address,
+                "A",
+            )
+            .build();
+        let cluster = g.abuse_ring_clusters(2).remove(0);
+        assert!(cluster.link_kinds.len() >= 2, "fixture must be structurally suspicious");
+
+        let inv = Investigator::new(Baseline::default());
+        let result = inv.investigate_return_abuse(&risk_graph::PropertyGraph::new(), &cluster, &b, &HashMap::new());
+        assert_eq!(result.verdict, Verdict::Unsupported);
+        assert!(result.should_hold_funds());
+        assert!(result.requires_human());
+    }
+
+    #[test]
+    fn partial_visibility_dampens_confidence_below_human_threshold() {
+        // Full structural ring but behavioral data for ONE member only:
+        // strong signals seen through a keyhole still go to a human.
+        let b = behaviors(&[("R1", 12, 5, 1, 1, 15)]);
+        let inv = Investigator::new(Baseline::default());
+        let result =
+            inv.investigate_return_abuse(&risk_graph::PropertyGraph::new(), &ring_cluster(), &b, &HashMap::new());
+        assert_eq!(result.verdict, Verdict::Supported);
+        assert!(
+            result.evidence_confidence < 0.5,
+            "partial observation must keep confidence below 0.5, got {}",
+            result.evidence_confidence
+        );
+        assert!(result.requires_human());
+    }
+
+    #[test]
+    fn exposure_sums_across_cluster_members() {
+        let b = behaviors(&[
+            ("R1", 12, 5, 1, 1, 15),
+            ("R2", 12, 5, 1, 1, 15),
+            ("R3", 12, 5, 1, 1, 15),
+        ]);
+        let mut exposure = HashMap::new();
+        exposure.insert("R1".to_string(), 10_000i64);
+        exposure.insert("R3".to_string(), 5_000i64);
+        let inv = Investigator::new(Baseline::default());
+        let result = inv.investigate_return_abuse(&risk_graph::PropertyGraph::new(), &ring_cluster(), &b, &exposure);
+        assert_eq!(result.estimated_exposure_paise, 15_000);
+    }
+}
