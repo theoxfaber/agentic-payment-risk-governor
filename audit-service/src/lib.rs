@@ -99,3 +99,70 @@ impl<S: AuditStore + 'static> action_service::AuditService for AuditService<S> {
             .map_err(|e| action_service::ActionServiceError::AuditService(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use risk_governor_types::{generate_correlation_id, now_utc};
+
+    fn record(decision_id: Option<Uuid>, event: AuditEventType) -> AuditRecord {
+        AuditRecord {
+            record_id: generate_correlation_id(),
+            decision_id,
+            event_type: event,
+            payload: serde_json::json!({ "k": "v" }),
+            created_at: now_utc(),
+        }
+    }
+
+    #[tokio::test]
+    async fn append_and_retrieve_by_decision() {
+        let store = Arc::new(InMemoryAuditStore::new());
+        let id = generate_correlation_id();
+        let svc = AuditService::new(store.clone());
+        for event in [
+            AuditEventType::ActionRequested,
+            AuditEventType::PolicyEvaluated,
+            AuditEventType::RiskScored,
+            AuditEventType::DecisionMade,
+        ] {
+            svc.record(event, Some(id), serde_json::json!(null)).await;
+        }
+        let trail = svc.trail_for(id).await.unwrap();
+        assert_eq!(trail.len(), 4);
+        assert_eq!(trail[0].event_type, AuditEventType::ActionRequested);
+        assert_eq!(trail[3].event_type, AuditEventType::DecisionMade);
+    }
+
+    #[tokio::test]
+    async fn trail_returns_empty_for_unknown_id() {
+        let svc = AuditService::new(Arc::new(InMemoryAuditStore::new()));
+        assert!(svc.trail_for(generate_correlation_id()).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn all_records_includes_pre_decision_events() {
+        // The unlinkable-trail bug (BUGS.md #1): records emitted before the
+        // decision existed carried decision_id None and vanished from replay.
+        // They must still land in the global log.
+        let store = Arc::new(InMemoryAuditStore::new());
+        let svc = AuditService::new(store.clone());
+        svc.record(AuditEventType::ActionRequested, None, serde_json::json!(null))
+            .await;
+        assert_eq!(svc.all_records().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn scoped_records_do_not_leak_across_decisions() {
+        let store = Arc::new(InMemoryAuditStore::new());
+        let svc = AuditService::new(store.clone());
+        let a = generate_correlation_id();
+        let b = generate_correlation_id();
+        svc.record(AuditEventType::DecisionMade, Some(a), serde_json::json!(null))
+            .await;
+        svc.record(AuditEventType::DecisionMade, Some(b), serde_json::json!(null))
+            .await;
+        assert_eq!(svc.trail_for(a).await.unwrap().len(), 1);
+        assert_eq!(svc.trail_for(b).await.unwrap().len(), 1);
+    }
+}
