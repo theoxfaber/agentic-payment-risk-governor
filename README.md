@@ -157,11 +157,12 @@ action_requested → policy_evaluated → risk_scored → graph_analyzed
 
 ### 2. Tests, eval, demos
 
-`cargo test --workspace` is fully self-contained: ~90 tests, no network, no
+`cargo test --workspace` is fully self-contained: ~100 tests, no network, no
 credentials, no Docker required. Tests that need live infrastructure
 (NATS/compose stack) are tagged `#[ignore]` with the reason in the attribute —
 run them explicitly after `docker compose up -d`. CI gates every push on
-build + test + clippy (`-D warnings`) + fmt + a cargo-audit dependency scan.
+build + test + clippy (`-D warnings`) + fmt + a cargo-audit dependency scan +
+**enforced line coverage** (`cargo llvm-cov --fail-under-lines 60`).
 
 ```bash
 # Tests (full workspace)
