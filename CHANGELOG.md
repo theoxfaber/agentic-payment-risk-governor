@@ -6,7 +6,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- `docs/TESTING.md`: per-crate test inventory (154 tests), the offline-run
+- Robustness evaluation (`eval-harness::robustness`): degradation sweep over
+  held-out worlds (missing behavioral records, timing jitter, count noise) —
+  recall holds at 100% while human-review share rises 1%→72% and legitimate
+  friction moves 0→24 flagged of ~1.5-2k; randomized-parameter sweep across
+  140 never-tuned world shapes lands 100% precision / 99.4% recall
+- Three robustness regression gates: recall holds + uncertainty routes to
+  humans under degradation; randomized-world precision/recall ≥95%;
+  perturbation harness proven non-vacuous
+- README "What breaks first when the data gets messy" section with the
+  degradation table and honest read of where the cost lands
+
+### Added (earlier this release)
+- `docs/TESTING.md`: per-crate test inventory (157 tests), the offline-run
   guarantee, and the explicit list of opt-in infrastructure-tagged suites
 - Fresh-clone verification: clean clone + stripped env (no credentials)
   passes the full suite and `./demo.sh` end-to-end

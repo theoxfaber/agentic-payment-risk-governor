@@ -17,6 +17,8 @@ use investigation_engine::Investigator;
 use serde::Serialize;
 use std::collections::HashMap;
 
+pub mod robustness;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Escalation {

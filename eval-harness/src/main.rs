@@ -88,4 +88,37 @@ fn main() {
             friction as f64 / 100.0
         );
     }
+
+    // -------------------------------------------------------------------
+    // Robustness: the headline numbers above are CLEAN-data numbers. Real
+    // evidence pipelines degrade — records go missing, timestamps drift,
+    // counters are noisy. This sweep measures what breaks first.
+    // -------------------------------------------------------------------
+    println!("\n=== ROBUSTNESS: degradation sweep over held-out seeds ===");
+    println!(
+        "{:<8} {:>10} {:>10} {:>6} {:>6} {:>12} {:>16} {:>13}",
+        "mess", "precision", "recall", "FP", "FN", "FN cost", "legit flagged", "review share"
+    );
+    for row in eval_harness::robustness::run_degradation_sweep(eval_harness::HELDOUT_SEEDS) {
+        println!(
+            "{:<8} {:>9.1}% {:>9.1}% {:>6} {:>6} ₹{:>11.0} {:>9} of {:<5} {:>12.1}%",
+            row.level,
+            row.precision * 100.0,
+            row.recall * 100.0,
+            row.fp,
+            row.fn_count,
+            row.fn_cost_paise as f64 / 100.0,
+            row.legit_flagged,
+            row.legit_customers,
+            row.human_review_share * 100.0,
+        );
+    }
+
+    println!("\n=== ROBUSTNESS: randomized world shapes (parameters never tuned against) ===");
+    let (precision, recall, worlds) = eval_harness::robustness::run_randomized_sweep(20, 987_654);
+    println!(
+        "investigation_engine across {worlds} randomly-drawn worlds: precision={:.1}% recall={:.1}%",
+        precision * 100.0,
+        recall * 100.0
+    );
 }

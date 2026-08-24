@@ -5,7 +5,7 @@ credentials, no Postgres, no NATS, no LLM API keys. A fresh clone needs only
 a Rust toolchain:
 
 ```bash
-cargo test --workspace        # 154 tests, all green, zero environment setup
+cargo test --workspace        # 157 tests, all green, zero environment setup
 ```
 
 ## Test inventory by crate
@@ -26,7 +26,7 @@ attributed to their crate):
 | `intent-engine` | 8 | Heuristic claim extraction (amounts, order refs, urgency), LLM client against a local OpenAI-compatible mock, degraded fallback on failure/timeout |
 | `mcp-server` | 10 | MCP handshake, tools/list schema, tool calls end-to-end against a fake governor, JSON-RPC error paths |
 | `evidence-service` | 7 | History accumulation, velocity stats, gather semantics |
-| `eval-harness` | 6 | **Held-out regression gates:** evasion recall ≥90% on every unseen seed, zero false positives on households and coincidental sharing across all held-out seeds, detector contrast preserved |
+| `eval-harness` | 9 | **Held-out regression gates:** evasion recall ≥90% on every unseen seed, zero false positives on households and coincidental sharing across all held-out seeds, detector contrast preserved; **robustness gates:** recall holds and review share rises under data degradation, randomized-world recall ≥95%, perturbation harness non-vacuous |
 | `dataset-gen` | 6 | Adversarial world generators produce non-degenerate fixtures |
 | `evaluation-service` | 4 | Labeled-dataset pipeline with cost accounting |
 | `webhook-consumer` | 5 | Integration tests over a real axum router |
@@ -36,7 +36,7 @@ attributed to their crate):
 | `pg-store` | 2 | Seed JSON parsing (live-DB paths are `#[ignore]`-tagged) |
 | `dashboard` | 2 | Auth-header wiring in served page, key escaping |
 
-**Total: 154.**
+**Total: 157.**
 
 ## Which tests touch external infrastructure
 

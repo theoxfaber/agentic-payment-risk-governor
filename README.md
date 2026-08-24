@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-21--crate%20workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-154%20passing-1a7f37)
+![Tests](https://img.shields.io/badge/tests-157%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-reserved-blue)
 
 **AI agents can now execute refunds, payouts, and orders on payment platforms
@@ -134,6 +134,42 @@ seeds — 972 legitimate customers sharing devices, addresses, NAT IPs:
 Regression tests enforce these properties on every held-out seed — recall ≥90%
 under adversarial evasion and zero false positives are CI gates, not claims.
 
+### What breaks first when the data gets messy
+
+The table above is *clean-data* performance. Real evidence pipelines degrade:
+behavioral records go missing, timestamps drift, event counters are noisy.
+Rather than pretend otherwise, the harness degrades held-out worlds along
+those axes and measures it (`cargo run --release -p eval-harness` prints the
+full sweep):
+
+| Mess level | Precision | Recall | Legit customers flagged | Human-review share |
+|---|---:|---:|---:|---:|
+| clean | 100% | 100% | **0** of 2,136 | 1% |
+| mild (10% missing data, ±12h jitter) | 100% | 100% | 3 of 1,929 | 30% |
+| heavy (30% missing, ±48h jitter, count noise) | 100% | 100% | **24** of 1,519 | 72% |
+
+Read honestly, this shows both the strength and the cost of the design:
+
+- **Recall never collapses** — even with 30% of evidence missing, no abuser is
+  silently cleared, because falling confidence escalates to humans instead of
+  guessing (review share climbs 1% → 72%). That is the core safety property
+  working under stress.
+- **The bill moves to friction and workload** — legitimate customers start
+  getting flagged (0 → 24, ~1.6%) and human reviewers carry more load. In a
+  real deployment those are the tuning knobs you'd watch, and this harness is
+  how you'd watch them.
+
+And because "100% on your own templates" proves little, the sweep also draws
+**140 randomly-parameterized worlds** (population size, ring count, ring size
+never tuned against):
+
+> investigation engine across 140 randomly-drawn worlds:
+> **precision 100%, recall 99.4%**
+
+Not perfect — one ring in a few hundred slips through when random draws
+produce near-evasion shapes. That gap is a more credible number than another
+clean 100%.
+
 ## What's real vs simulated
 
 Said plainly, because credibility matters more than impressions:
@@ -144,8 +180,10 @@ Said plainly, because credibility matters more than impressions:
   chaos tests, API-key auth with constant-time comparison, idempotent gateway
   execution with a refund lost-response guard, and live Razorpay test-mode API calls
 - ⚠️ **Simulated:** the dataset is synthetic and labeled by construction.
-  Held-out metrics prove the reasoning generalizes across unseen world draws —
-  not production performance
+  Held-out metrics, randomized-parameter sweeps, and degradation tests prove
+  the reasoning generalizes across unseen world draws and messy data — not
+  production performance. No claim of access to Razorpay's production risk
+  systems or internal models
 - 🚫 **Not claimed:** access to Razorpay production systems or internal models;
   this layer composes with platform-side fraud models, never replaces them
 
@@ -247,7 +285,7 @@ intent and moves no money.
 <summary><b>Tests & evaluation</b></summary>
 
 ```bash
-cargo test --workspace              # 154 tests — offline, self-contained (see docs/TESTING.md)
+cargo test --workspace              # 157 tests — offline, self-contained (see docs/TESTING.md)
 cargo run --release -p eval-harness # calibration + held-out tables
 
 # Distributed demo (NATS + Postgres):

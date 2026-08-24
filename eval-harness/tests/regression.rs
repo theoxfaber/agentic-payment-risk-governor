@@ -142,3 +142,78 @@ fn held_out_coincidental_sharing_precision_stays_perfect() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// ROBUSTNESS GATES — performance under messy data, not just clean sweeps.
+// Real evidence pipelines lose records, drift timestamps, and miscount.
+// The safety property being pinned: degradation routes uncertainty to HUMANS
+// (review share rises), never to silent clears (recall holds).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn degradation_recall_holds_and_uncertainty_routes_to_humans() {
+    // One seed keeps CI fast while still covering every mess level x every
+    // world kind; the full 3-seed sweep runs in `cargo run -p eval-harness`.
+    let rows = eval_harness::robustness::run_degradation_sweep(&eval_harness::HELDOUT_SEEDS[0..1]);
+    assert_eq!(rows.len(), 3, "clean/mild/heavy");
+
+    for r in &rows {
+        assert!(
+            r.recall >= 0.90,
+            "mess level {}: pooled recall {}% < 90% — abusers were silently cleared",
+            r.level,
+            r.recall * 100.0
+        );
+    }
+
+    // Review share must RISE with degradation: falling confidence escalates
+    // to humans instead of guessing.
+    let (clean, mild, heavy) = (&rows[0], &rows[1], &rows[2]);
+    assert!(
+        heavy.human_review_share > clean.human_review_share,
+        "human-review share {}% did not rise from clean to heavy",
+        heavy.human_review_share * 100.0
+    );
+    assert!(
+        mild.human_review_share > clean.human_review_share,
+        "even mild degradation must shift decisions toward human review"
+    );
+}
+
+#[test]
+fn randomized_world_shapes_recall_stays_above_95_percent() {
+    // Reduced draws for CI runtime; the full 140-world sweep runs via
+    // `cargo run --release -p eval-harness`.
+    let (precision, recall, worlds) = eval_harness::robustness::run_randomized_sweep(6, 987_654);
+    assert!(worlds >= 30, "sweep too small to mean anything: {worlds}");
+    assert!(recall >= 0.95, "randomized-world recall {recall:.1}% < 95%");
+    assert!(precision >= 0.95, "randomized-world precision {precision:.1}% < 95%");
+}
+
+#[test]
+fn degrade_world_actually_degrades() {
+    // Guard against a vacuous harness: perturbation must visibly change the data.
+    use dataset_gen::{generate_world, WorldKind, WorldSpec};
+    use eval_harness::robustness::{degrade_world, MessLevel};
+
+    let w = generate_world(WorldSpec {
+        kind: WorldKind::ReturnAbuse,
+        n_background: 300,
+        n_rings: 6,
+        ring_size: 3,
+        seed: 31_415,
+    });
+    let degraded = degrade_world(&w, MessLevel::Heavy, 42);
+    assert!(
+        degraded.behaviors.len() < w.behaviors.len(),
+        "heavy mess must drop behavioral records"
+    );
+    let jittered_differs = w.behaviors.iter().any(|(id, b)| {
+        degraded
+            .behaviors
+            .get(id)
+            .map(|d| d.purchase_to_return_hours != b.purchase_to_return_hours)
+            .unwrap_or(false)
+    });
+    assert!(jittered_differs, "heavy mess must jitter timing");
+}
