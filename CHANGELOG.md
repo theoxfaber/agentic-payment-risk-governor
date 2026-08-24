@@ -6,6 +6,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `docs/TESTING.md`: per-crate test inventory (154 tests), the offline-run
+  guarantee, and the explicit list of opt-in infrastructure-tagged suites
+- Fresh-clone verification: clean clone + stripped env (no credentials)
+  passes the full suite and `./demo.sh` end-to-end
+
+### Changed
+- `governor-server` split into focused modules (`auth`, `backends`,
+  `bootstrap`, `routes`, `state`) — main.rs down from 952 to 260 LOC;
+  handler/replay/auth coverage grew from 6 to 12 tests in the process
+- Dashboard API-key placeholder renamed to a self-evidently non-secret token;
+  README test counts reconciled with the actual suite (154)
+
+### Added (earlier this release)
 - `./demo.sh` — one-command scripted walkthrough: thesis, ALLOW/REVIEW/BLOCK
   with live audit replay and human approval, agentic payout, held-out eval
   headline. `--keep` leaves the server running (for recording)

@@ -156,7 +156,7 @@ pub fn page(api_key: &str) -> String {
 
 <script>
 'use strict';
-const API_KEY = '__API_KEY__';
+const API_KEY = 'DASHBOARD_API_KEY_PLACEHOLDER';
 const authHeaders = () => ({ 'x-api-key': API_KEY });
 const fmtINR = p => '₹' + p.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const esc = s => String(s).replace(/[&<>"']/g,
@@ -289,7 +289,7 @@ setInterval(refresh, 2000);
 </script>
 </body>
 </html>"#;
-    template.replace("__API_KEY__", &js_escape(api_key))
+    template.replace("DASHBOARD_API_KEY_PLACEHOLDER", &js_escape(api_key))
 }
 
 #[cfg(test)]
@@ -298,6 +298,8 @@ mod tests {
 
     #[test]
     fn page_embeds_escaped_api_key() {
+        // Synthetic fixture value — no real credential, deliberately malformed
+        // to prove escaping works.
         let html = page("rgov_test'key\"with\\quotes");
         assert!(
             html.contains(r#"API_KEY = 'rgov_test\'key\"with\\quotes'"#),
