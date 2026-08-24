@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="420" viewBox="0 0 920 420" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif">
+  <rect width="920" height="420" fill="#ffffff"/>
+
+  <!-- ===================== Panel A: detection quality ===================== -->
+  <text x="60" y="34" font-size="15" font-weight="700" fill="#24292f">Detection quality</text>
+
+  <!-- gridlines -->
+  <g stroke="#eaeef2" stroke-width="1">
+    <line x1="70" y1="70"  x2="430" y2="70"/>
+    <line x1="70" y1="190" x2="430" y2="190"/>
+    <line x1="70" y1="310" x2="430" y2="310"/>
+  </g>
+  <g font-size="11" fill="#57606a" text-anchor="end">
+    <text x="62" y="74">100%</text>
+    <text x="62" y="194">50%</text>
+    <text x="62" y="314">0%</text>
+  </g>
+
+  <!-- legend -->
+  <rect x="270" y="22" width="12" height="12" fill="#0969da" rx="2"/>
+  <text x="287" y="32" font-size="11" fill="#57606a">precision</text>
+  <rect x="355" y="22" width="12" height="12" fill="#1a7f37" rx="2"/>
+  <text x="372" y="32" font-size="11" fill="#57606a">recall</text>
+
+  <!-- group 1: rules only — precision 100%, recall 66% -->
+  <rect x="82"  y="70"  width="44" height="240" fill="#0969da" rx="3"/>
+  <rect x="134" y="151.6" width="44" height="158.4" fill="#1a7f37" rx="3"/>
+  <text x="104" y="62"  font-size="12" font-weight="600" fill="#24292f" text-anchor="middle">100%</text>
+  <text x="156" y="143.6" font-size="12" font-weight="600" fill="#24292f" text-anchor="middle">66%</text>
+
+  <!-- group 2: clustering only — precision 51%, recall 100% -->
+  <rect x="202" y="187.6" width="44" height="122.4" fill="#0969da" rx="3"/>
+  <rect x="254" y="70"  width="44" height="240" fill="#1a7f37" rx="3"/>
+  <text x="224" y="179.6" font-size="12" font-weight="600" fill="#24292f" text-anchor="middle">51%</text>
+  <text x="276" y="62"  font-size="12" font-weight="600" fill="#24292f" text-anchor="middle">100%</text>
+
+  <!-- group 3: investigation engine — precision 100%, recall 100% -->
+  <rect x="322" y="70" width="44" height="240" fill="#0969da" rx="3"/>
+  <rect x="374" y="70" width="44" height="240" fill="#1a7f37" rx="3"/>
+  <text x="344" y="62" font-size="12" font-weight="600" fill="#24292f" text-anchor="middle">100%</text>
+  <text x="396" y="62" font-size="12" font-weight="600" fill="#24292f" text-anchor="middle">100%</text>
+
+  <!-- x labels -->
+  <g font-size="12" fill="#57606a" text-anchor="middle">
+    <text x="130" y="330">Rules only</text>
+    <text x="250" y="330">Clustering only</text>
+    <text x="370" y="330" font-weight="700" fill="#1a7f37">Investigation</text>
+    <text x="130" y="346">(misses abuse)</text>
+    <text x="250" y="346">(flags innocents)</text>
+    <text x="370" y="346" font-weight="700" fill="#1a7f37">engine (ours)</text>
+  </g>
+
+  <!-- ===================== Panel B: money ===================== -->
+  <text x="490" y="34" font-size="15" font-weight="700" fill="#24292f">Money across held-out worlds</text>
+
+  <g stroke="#eaeef2" stroke-width="1">
+    <line x1="500" y1="70"  x2="900" y2="70"/>
+    <line x1="500" y1="310" x2="900" y2="310"/>
+  </g>
+  <g font-size="11" fill="#57606a" text-anchor="end">
+    <text x="492" y="74">₹210K</text>
+    <text x="492" y="314">₹0</text>
+  </g>
+
+  <!-- legend -->
+  <rect x="585" y="22" width="12" height="12" fill="#1a7f37" rx="2"/>
+  <text x="602" y="32" font-size="11" fill="#57606a">prevented</text>
+  <rect x="682" y="22" width="12" height="12" fill="#bf8700" rx="2"/>
+  <text x="699" y="32" font-size="11" fill="#57606a">FP cost</text>
+  <rect x="765" y="22" width="12" height="12" fill="#cf222e" rx="2"/>
+  <text x="782" y="32" font-size="11" fill="#57606a">FN cost</text>
+
+  <!-- scale: 240px = ₹210K -->
+  <!-- group 1: rules only — prevented 166950→191, fp 0, fn 36000→41 -->
+  <rect x="512" y="119" width="28" height="191" fill="#1a7f37" rx="3"/>
+  <rect x="546" y="308" width="28" height="2"   fill="#bf8700" rx="1"/>
+  <rect x="580" y="269" width="28" height="41"  fill="#cf222e" rx="3"/>
+  <!-- group 2: clustering only — prevented 202950→232, fp 65925→75, fn 0 -->
+  <rect x="637" y="78"  width="28" height="232" fill="#1a7f37" rx="3"/>
+  <rect x="671" y="235" width="28" height="75"  fill="#bf8700" rx="3"/>
+  <rect x="705" y="308" width="28" height="2"   fill="#cf222e" rx="1"/>
+  <!-- group 3: investigation — prevented 202950→232, fp 0, fn 0 -->
+  <rect x="762" y="78"  width="28" height="232" fill="#1a7f37" rx="3"/>
+  <rect x="796" y="308" width="28" height="2"   fill="#bf8700" rx="1"/>
+  <rect x="830" y="308" width="28" height="2"   fill="#cf222e" rx="1"/>
+
+  <!-- value labels -->
+  <g font-size="10" fill="#24292f" text-anchor="middle">
+    <text x="526" y="112">₹167K</text>
+    <text x="594" y="262">₹36K</text>
+    <text x="651" y="71" font-weight="700">₹203K</text>
+    <text x="685" y="228">₹66K FP</text>
+    <text x="776" y="71" font-weight="700" fill="#1a7f37">₹203K</text>
+  </g>
+
+  <!-- x labels -->
+  <g font-size="12" fill="#57606a" text-anchor="middle">
+    <text x="610" y="330">Rules only</text>
+    <text x="735" y="330">Clustering only</text>
+    <text x="855" y="330" font-weight="700" fill="#1a7f37">Investigation</text>
+  </g>
+
+  <text x="490" y="392" font-size="11" fill="#57606a">Aggregate over held-out abuse worlds · 3 seeds the detector never saw · FP cost = friction on legitimate customers · FN cost = loss to abusers</text>
+  <text x="60" y="392" font-size="11" fill="#8b949e" font-style="italic">Synthetic labeled data — proves reasoning generalizes across unseen world draws</text>
+</svg>
