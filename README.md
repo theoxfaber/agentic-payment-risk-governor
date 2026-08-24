@@ -106,13 +106,26 @@ Single-thesis Rust workspace; each crate is a clean module of one pipeline:
 | `evidence-service` | Agent history store |
 | `audit-service` / `risk-governor-replay` | Decision trail + replay |
 | `dashboard` | One-page live decision stream, replay viewer, human-approval UI (vanilla JS, no build step) |
-| `razorpay-gateway` | Test-mode HTTP client (basic auth, retry/backoff on 429/5xx) + mock for offline runs |
+| `razorpay-gateway` | Test-mode HTTP client (basic auth, retry/backoff on 429/5xx, per-decision idempotency, refund lost-response guard) + mock for offline runs |
+| `mcp-server` | Model Context Protocol server: any AI agent can call `check_action` / `get_decision` / `list_reviews` as tools — governance becomes part of the agent's toolset |
 | `nats-link` | Distributed mode (pipeline split across processes via NATS) |
 | `dataset-gen` / `eval-harness` | Labeled synthetic worlds + precision/recall/cost eval |
 | `governor-server` | Unified axum binary: decision API + replay + approval + dashboard at `/` |
 | `webhook-consumer`, `dashboard`, `evaluation-service`, `infra-probe` | Supporting services |
 
 ## Run it
+
+### 0. The one-command demo (start here)
+
+```bash
+./demo.sh
+```
+
+Scripted walkthrough of the whole story in ~60 seconds: thesis → ALLOW
+(₹500 refund executes) → REVIEW (₹1,500 held, full audit replay, human
+approves, held call fires) → BLOCK (₹6,000 + urgency language, never reaches
+the API) → agentic payout through the same gates → held-out evaluation
+headline numbers. `./demo.sh --keep` leaves the server running afterwards.
 
 ### 1. The API server + live dashboard (flagship)
 
@@ -174,9 +187,52 @@ action_requested → policy_evaluated → risk_scored → graph_analyzed
 → decision_made → human_reviewed → razorpay_called
 ```
 
-### 2. Tests, eval, demos
+**Action types:** refunds and payouts are first-class (payouts route to the
+RazorpayX `/payouts` API with fund-account/mode from `context`; payment links
+hit `/payment_links`). Same policy caps, risk scoring, investigation plane,
+and audit trail for every action type:
 
-`cargo test --workspace` is fully self-contained: ~100 tests, no network, no
+```bash
+curl -s -X POST localhost:8080/v1/actions \
+  -H 'content-type: application/json' -H "X-API-Key: $KEY" \
+  -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001",
+       "action_type":"payout","amount":250000,
+       "declared_intent":"payout vendor invoice INV-42",
+       "context":{"fund_account_id":"fa_123","mode":"IMPS"}}'
+```
+
+### 2. MCP server — wire governance into any AI agent
+
+The governor speaks [Model Context Protocol](https://modelcontextprotocol.io)
+over stdio. An agent wired to it asks "may I move this money?" as an ordinary
+tool call — and literally cannot execute a financial action without it passing
+the same policy/risk/investigation gates and landing in the same audit trail.
+
+```bash
+GOVERNOR_URL=http://127.0.0.1:8080 GOVERNOR_API_KEY=$KEY cargo run -p mcp-server
+```
+
+Tools: `check_action` (ALLOW/REVIEW/BLOCK + reasoning), `get_decision`
+(full replay), `list_reviews`. Claude Desktop config example:
+
+```json
+{
+  "mcpServers": {
+    "risk-governor": {
+      "command": "cargo",
+      "args": ["run", "-p", "mcp-server"],
+      "env": {
+        "GOVERNOR_URL": "http://127.0.0.1:8080",
+        "GOVERNOR_API_KEY": "<key>"
+      }
+    }
+  }
+}
+```
+
+### 3. Tests, eval, demos
+
+`cargo test --workspace` is fully self-contained: 146 tests, no network, no
 credentials, no Docker required. Tests that need live infrastructure
 (NATS/compose stack) are tagged `#[ignore]` with the reason in the attribute —
 run them explicitly after `docker compose up -d`. CI gates every push on
@@ -222,8 +278,7 @@ Said plainly, because credibility matters more than impressions:
 
 ## Future work
 
-With more time: payout scenarios as a first-class path alongside refunds,
-server-side idempotency keys on the refund probe (the current lost-response
-guard has a check-then-send race window), single-packet race testing for
-velocity controls, and broader detection classes (OAuth flows,
+With more time: server-side idempotency keys on the refund probe (the current
+lost-response guard has a check-then-send race window), single-packet race
+testing for velocity controls, and broader detection classes (OAuth flows,
 deserialization, request smuggling) at the gateway boundary.

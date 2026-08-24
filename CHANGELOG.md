@@ -6,6 +6,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `./demo.sh` — one-command scripted walkthrough: thesis, ALLOW/REVIEW/BLOCK
+  with live audit replay and human approval, agentic payout, held-out eval
+  headline. `--keep` leaves the server running (for recording)
+- `mcp-server` crate: Model Context Protocol server over stdio exposing the
+  governor as agent tools — `check_action`, `get_decision`, `list_reviews`.
+  Any MCP-capable AI agent now goes through the same policy/risk/investigation
+  gates and audit trail as every other client
+- Payout flow end-to-end: RazorpayX `/payouts` routing (fund account, mode,
+  purpose from context, 30-char narration cap), `/payment_links` routing;
+  identical policy caps, risk scoring, and audit trail
+
+### Changed
+- README: one-command demo quick-start, MCP integration guide, payout example
+
+### Added
 - API-key auth on every `/v1/*` route (`GOVERNOR_API_KEY`, or an ephemeral
   key generated and printed at boot) — constant-time comparison; the
   dashboard authenticates with the server's own key

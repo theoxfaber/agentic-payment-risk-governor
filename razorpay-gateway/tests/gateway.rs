@@ -199,3 +199,71 @@ async fn transient_5xx_without_prior_success_retries_normally() {
         "one failed attempt + one retry"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Payout routing: RazorpayX payouts must hit POST /payouts with the
+// fund-account payload, not the generic payments endpoint.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn payout_routes_to_razorpayx_payouts_endpoint() {
+    let captured = Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+    let cap = captured.clone();
+    let app = axum::Router::new().route(
+        "/payouts",
+        axum::routing::post(move |body: axum::Json<serde_json::Value>| {
+            let cap = cap.clone();
+            async move {
+                *cap.lock().unwrap() = Some(body.0);
+                axum::Json(serde_json::json!({ "id": "pout_MOCK", "status": "processed" }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let gw = gateway(&format!("http://{addr}"));
+    use action_service::RazorpayGateway as _;
+
+    let request = AgentActionRequest {
+        agent_id: "agent-01".into(),
+        merchant_id: "merchant-001".into(),
+        action_type: ActionType::Payout,
+        amount: 250_000,
+        currency: "INR".into(),
+        declared_intent: "payout vendor invoice INV-42".into(),
+        context: serde_json::json!({ "fund_account_id": "fa_123", "mode": "NEFT" }),
+        timestamp: now_utc(),
+        correlation_id: generate_correlation_id(),
+    };
+
+    let resp = gw.execute(&request, generate_correlation_id()).await.unwrap();
+    assert_eq!(resp["status"], "processed");
+
+    let body = captured.lock().unwrap().clone().expect("payout body captured");
+    assert_eq!(body["amount"], 250_000);
+    assert_eq!(body["fund_account_id"], "fa_123");
+    assert_eq!(body["mode"], "NEFT");
+    // narration is capped at 30 chars (RazorpayX limit)
+    assert!(body["narration"].as_str().unwrap().chars().count() <= 30);
+}
+
+#[test]
+fn payment_link_routes_off_payments_endpoint() {
+    // Endpoint construction is pure — verify without network.
+    let gw = gateway("https://api.razorpay.com/v1");
+    let request = AgentActionRequest {
+        agent_id: "agent-01".into(),
+        merchant_id: "merchant-001".into(),
+        action_type: ActionType::PaymentLink,
+        amount: 10_000,
+        currency: "INR".into(),
+        declared_intent: "link for order #9".into(),
+        context: serde_json::json!({}),
+        timestamp: now_utc(),
+        correlation_id: generate_correlation_id(),
+    };
+    let (url, _body) = gw.endpoint_for(&request);
+    assert!(url.ends_with("/payment_links"), "payment links must not hit {url}");
+}

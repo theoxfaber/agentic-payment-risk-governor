@@ -1,6 +1,7 @@
 use action_service::{ActionServiceError, RazorpayGateway};
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
+use risk_governor_types::ActionType;
 use risk_governor_types::AgentActionRequest;
 use serde_json::json;
 use sha2::Sha256;
@@ -189,21 +190,44 @@ impl HttpGateway {
         Ok(payload)
     }
 
-    fn endpoint_for(&self, request: &AgentActionRequest) -> (String, serde_json::Value) {
+    /// Endpoint + body selection per action type. Visible for tests: the
+    /// routing table IS the contract with Razorpay's API surface.
+    pub fn endpoint_for(&self, request: &AgentActionRequest) -> (String, serde_json::Value) {
+        let ctx = &request.context;
+        let s = |k: &str| ctx.get(k).and_then(|v| v.as_str()).map(|v| v.to_string());
         match request.action_type {
-            risk_governor_types::ActionType::Refund => {
-                let payment_id = request
-                    .context
-                    .get("payment_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+            ActionType::Refund => {
+                let payment_id = s("payment_id").unwrap_or_default();
                 (
                     format!("{}/payments/{}/refund", self.base_url, payment_id),
                     json!({ "amount": request.amount, "speed": "normal" }),
                 )
             }
-            _ => (
+            // RazorpayX Fund Management API. Live mode needs X fund account;
+            // test mode accepts the defaults below.
+            ActionType::Payout => (
+                format!("{}/payouts", self.base_url),
+                json!({
+                    "account_number": s("account_number").unwrap_or_else(|| "2323230028979561".into()),
+                    "fund_account_id": s("fund_account_id").unwrap_or_default(),
+                    "amount": request.amount,
+                    "currency": request.currency,
+                    "mode": s("mode").unwrap_or_else(|| "IMPS".into()),
+                    "purpose": s("purpose").unwrap_or_else(|| "payout".into()),
+                    "queue_if_low_balance": true,
+                    "narration": request.declared_intent.chars().take(30).collect::<String>(),
+                }),
+            ),
+            ActionType::PaymentLink => (
+                format!("{}/payment_links", self.base_url),
+                json!({
+                    "amount": request.amount,
+                    "currency": request.currency,
+                    "reference_id": s("reference_id").unwrap_or_default(),
+                    "description": request.declared_intent.chars().take(100).collect::<String>(),
+                }),
+            ),
+            ActionType::Transfer | ActionType::Capture | ActionType::Void => (
                 format!("{}/payments", self.base_url),
                 json!({ "amount": request.amount, "currency": request.currency }),
             ),
@@ -245,7 +269,7 @@ impl RazorpayGateway for HttpGateway {
         }
 
         let result = match request.action_type {
-            risk_governor_types::ActionType::Refund => self.execute_refund(request, decision_id).await,
+            ActionType::Refund => self.execute_refund(request, decision_id).await,
             _ => {
                 let (url, body) = self.endpoint_for(request);
                 self.post_with_retry(&url, &body).await.and_then(|(status, payload)| {

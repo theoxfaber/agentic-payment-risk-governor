@@ -11,6 +11,7 @@ members = [
     "policy-engine",
     "risk-engine",
     "intent-engine",
+    "mcp-server",
     "evidence-service",
     "audit-service",
     "pg-store",
