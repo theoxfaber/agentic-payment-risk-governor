@@ -1,4 +1,6 @@
+use intent_engine::IntentExtractor;
 use risk_governor_types::*;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -9,11 +11,26 @@ pub enum RiskEngineError {
 
 pub struct RiskEngine {
     model_version: String,
+    /// Optional AI-assisted declared-intent understanding. Claims are
+    /// EVIDENCE ONLY — they can raise the mismatch score but never grant an
+    /// allow on their own.
+    intent_extractor: Option<Arc<dyn IntentExtractor>>,
 }
 
 impl RiskEngine {
     pub fn new(model_version: String) -> Self {
-        Self { model_version }
+        Self {
+            model_version,
+            intent_extractor: None,
+        }
+    }
+
+    /// Attach intent extraction (heuristic or LLM-backed). See intent-engine:
+    /// extracted claims are checked against the request's hard fields and any
+    /// contradiction raises intent mismatch.
+    pub fn with_intent_extractor(mut self, extractor: Arc<dyn IntentExtractor>) -> Self {
+        self.intent_extractor = Some(extractor);
+        self
     }
 
     pub async fn score(
@@ -23,7 +40,14 @@ impl RiskEngine {
     ) -> Result<RiskResult, RiskEngineError> {
         let features = self.extract_features(request, evidence);
         let risk_score = self.calculate_risk_score(&features);
-        let intent_mismatch_score = self.calculate_intent_mismatch(request, evidence);
+        let claims = match &self.intent_extractor {
+            Some(ex) => Some(
+                ex.extract(&request.declared_intent, request.action_type, request.amount)
+                    .await,
+            ),
+            None => None,
+        };
+        let intent_mismatch_score = self.calculate_intent_mismatch(request, claims.as_ref());
 
         Ok(RiskResult {
             risk_score,
@@ -120,7 +144,15 @@ impl RiskEngine {
         score.clamp(0.0, 1.0)
     }
 
-    fn calculate_intent_mismatch(&self, request: &AgentActionRequest, _evidence: &Evidence) -> f64 {
+    /// Intent mismatch = keyword signals (deterministic) + structured-claim
+    /// contradictions (from the intent extractor, when attached). Claims add
+    /// evidence of deception — a declared amount that disagrees with the
+    /// actual amount is a lie in the audit trail, whatever the keywords say.
+    fn calculate_intent_mismatch(
+        &self,
+        request: &AgentActionRequest,
+        claims: Option<&intent_engine::IntentClaims>,
+    ) -> f64 {
         let declared = request.declared_intent.to_lowercase();
         let mut mismatch = 0.0f64;
 
@@ -152,6 +184,26 @@ impl RiskEngine {
         }
         if declared.contains("large") && request.amount < 1000 {
             mismatch += 0.2;
+        }
+
+        // Structured claims from the extractor (heuristic or LLM-backed):
+        // contradiction between what was DECLARED and what is REQUESTED.
+        if let Some(c) = claims {
+            if let Some(claimed_amount) = c.amount_paise {
+                let claimed = claimed_amount as f64;
+                let actual = request.amount as f64;
+                let relative_diff = (claimed - actual).abs() / actual.max(1.0);
+                if relative_diff > 0.10 {
+                    mismatch += 0.3; // the stated reason and the money disagree
+                }
+            }
+            if let Some(hint) = &c.action_type_hint {
+                let actual_kind = format!("{:?}", request.action_type).to_lowercase();
+                if hint != &actual_kind {
+                    mismatch += 0.2;
+                }
+            }
+            mismatch += (c.urgency_flags.len() as f64 * 0.1).min(0.3);
         }
 
         mismatch.clamp(0.0, 1.0)
@@ -326,5 +378,69 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.model_version, "9.9.9-test");
+    }
+
+    // --- intent extractor attached: claims are evidence ------------------
+
+    fn engine_with_extractor() -> RiskEngine {
+        RiskEngine::new("1.2.0-intent".into()).with_intent_extractor(Arc::new(intent_engine::HeuristicExtractor))
+    }
+
+    #[tokio::test]
+    async fn declared_amount_contradiction_raises_mismatch() {
+        // Text claims ₹1,000 (100_000 paise); request moves ₹5,000.
+        let r = engine_with_extractor()
+            .score(
+                &request(500_000, "refund of rs 1000 for order #1"),
+                &evidence(50_000, 100_000, 5, &[]),
+            )
+            .await
+            .unwrap();
+        assert!(
+            r.intent_mismatch_score >= 0.3,
+            "declared-vs-actual amount contradiction must raise mismatch, got {}",
+            r.intent_mismatch_score
+        );
+    }
+
+    #[tokio::test]
+    async fn consistent_claim_keeps_mismatch_clean() {
+        // ₹50,000 = 50_000 paise claimed AND requested; keyword says refund.
+        let r = engine_with_extractor()
+            .score(
+                &request(50_000, "routine refund of rs 500 for order #1"),
+                &evidence(50_000, 100_000, 5, &[]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.intent_mismatch_score, 0.0);
+    }
+
+    #[tokio::test]
+    async fn urgency_claims_add_beyond_keywords() {
+        let r = engine_with_extractor()
+            .score(
+                &request(50_000, "urgent refund emergency asap bypass"),
+                &evidence(50_000, 100_000, 5, &[]),
+            )
+            .await
+            .unwrap();
+        assert!(r.intent_mismatch_score >= 0.5);
+    }
+
+    #[tokio::test]
+    async fn extractor_can_never_lower_a_nonzero_mismatch() {
+        // Keyword mismatch (no "refund" keyword) + empty claims text:
+        // extraction adds nothing, and must not subtract either.
+        let without = RiskEngine::default()
+            .score(&request(50_000, "monthly batch"), &evidence(50_000, 100_000, 5, &[]))
+            .await
+            .unwrap();
+        let with = engine_with_extractor()
+            .score(&request(50_000, "monthly batch"), &evidence(50_000, 100_000, 5, &[]))
+            .await
+            .unwrap();
+        assert_eq!(without.intent_mismatch_score, with.intent_mismatch_score);
+        assert!(with.intent_mismatch_score > 0.0);
     }
 }

@@ -4,17 +4,29 @@ use hmac::{Hmac, Mac};
 use risk_governor_types::AgentActionRequest;
 use serde_json::json;
 use sha2::Sha256;
+use std::collections::HashMap;
 use uuid::Uuid;
 
 const RAZORPAY_TEST_BASE: &str = "https://api.razorpay.com/v1";
 
 /// Fires only after an ALLOW decision — this is the actual money movement.
-#[derive(Clone)]
+///
+/// Two idempotency layers, because refunds are NOT idempotent server-side:
+///   1. Decision-level dedup — one `decision_id` executes exactly once, ever.
+///      A duplicate execute() (double-clicked approval, replayed request)
+///      returns the cached response without a second HTTP call.
+///   2. Lost-response guard on refunds — a 5xx is AMBIGUOUS (the refund may
+///      have succeeded before the error). Before any resend we probe the
+///      payment's refund list; if our amount already landed we treat it as
+///      executed instead of double-refunding.
 pub struct HttpGateway {
     http: reqwest::Client,
     key_id: String,
     key_secret: String,
     base_url: String,
+    /// decision_id → response of the ONE money-movement call fired for it.
+    /// Arc so that every clone of this gateway shares ONE execution record.
+    executed: std::sync::Arc<std::sync::Mutex<HashMap<Uuid, serde_json::Value>>>,
 }
 
 impl HttpGateway {
@@ -27,6 +39,7 @@ impl HttpGateway {
             key_id: key_id.into(),
             key_secret: key_secret.into(),
             base_url: RAZORPAY_TEST_BASE.to_string(),
+            executed: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -215,18 +228,168 @@ impl RazorpayGateway for HttpGateway {
         request: &AgentActionRequest,
         decision_id: Uuid,
     ) -> Result<serde_json::Value, ActionServiceError> {
-        let (url, body) = self.endpoint_for(request);
-        let (status, payload) = self.post_with_retry(&url, &body).await?;
+        // Layer 1: decision-level idempotency. The second execute() for a
+        // decision (double-clicked approval, replayed message) must never
+        // fire a second money-movement call.
+        if let Some(cached) = self
+            .executed
+            .lock()
+            .expect("gateway idempotency lock")
+            .get(&decision_id)
+        {
+            tracing::warn!(
+                ?decision_id,
+                "duplicate execution attempt — returning cached response, no second gateway call"
+            );
+            return Ok(cached.clone());
+        }
 
-        if !status.is_success() {
-            tracing::error!(?decision_id, %status, ?payload, "razorpay call failed");
+        let result = match request.action_type {
+            risk_governor_types::ActionType::Refund => self.execute_refund(request, decision_id).await,
+            _ => {
+                let (url, body) = self.endpoint_for(request);
+                self.post_with_retry(&url, &body).await.and_then(|(status, payload)| {
+                    ensure_success(status, &payload)?;
+                    tracing::info!(?decision_id, %status, "razorpay call succeeded");
+                    Ok(payload)
+                })
+            }
+        };
+
+        if let Ok(payload) = &result {
+            self.executed
+                .lock()
+                .expect("gateway idempotency lock")
+                .insert(decision_id, payload.clone());
+        }
+        result
+    }
+}
+
+impl HttpGateway {
+    /// Refund execution with the lost-response guard. Retries are safe on 429
+    /// (the request was rejected before processing) but AMBIGUOUS on 5xx: the
+    /// refund may have landed server-side before the error. So before any 5xx
+    /// resend we probe the payment's refunds; if our amount is already there,
+    /// we treat the refund as executed and refuse to double-fire.
+    async fn execute_refund(
+        &self,
+        request: &AgentActionRequest,
+        decision_id: Uuid,
+    ) -> Result<serde_json::Value, ActionServiceError> {
+        let payment_id = request
+            .context
+            .get("payment_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let url = format!("{}/payments/{}/refund", self.base_url, payment_id);
+        let body = json!({ "amount": request.amount, "speed": "normal" });
+
+        let mut attempt = 0u32;
+        loop {
+            let resp = self
+                .http
+                .post(&url)
+                .basic_auth(&self.key_id, Some(&self.key_secret))
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string()))?;
+            let status = resp.status();
+
+            if status.is_success() {
+                let payload: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| ActionServiceError::RazorpayGateway(format!("body decode: {e}")))?;
+                tracing::info!(?decision_id, %status, "refund succeeded");
+                return Ok(payload);
+            }
+
+            let rate_limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS;
+            let ambiguous_5xx = status.is_server_error();
+
+            if !rate_limited && !ambiguous_5xx {
+                // Definitive client error (400/401/404…) — retrying cannot help.
+                let payload: serde_json::Value = resp.json().await.unwrap_or(json!(null));
+                return Err(ActionServiceError::RazorpayGateway(format!(
+                    "razorpay {status}: {payload}"
+                )));
+            }
+
+            // Layer 2: lost-response check BEFORE any resend of an ambiguous 5xx.
+            if ambiguous_5xx && self.refund_landed(payment_id, request.amount).await? {
+                tracing::warn!(
+                    ?decision_id,
+                    %status,
+                    payment_id,
+                    amount = request.amount,
+                    "refund LANDED despite upstream error — treating as executed, not resending"
+                );
+                return Ok(json!({
+                    "status": "processed",
+                    "deduplicated_after_upstream_error": true,
+                    "payment_id": payment_id,
+                    "amount": request.amount,
+                }));
+            }
+
+            if attempt >= 3 {
+                let payload: serde_json::Value = resp.json().await.unwrap_or(json!(null));
+                return Err(ActionServiceError::RazorpayGateway(format!(
+                    "razorpay {status} after {attempt} retries: {payload}"
+                )));
+            }
+
+            let delay = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or_else(|| 1 << attempt)
+                .min(10);
+            tracing::warn!(%status, attempt, backoff_s = delay, "refund throttled/erroring — retrying");
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            attempt += 1;
+        }
+    }
+
+    /// True when a refund with this exact amount already exists on the
+    /// payment — i.e. an earlier attempt actually processed despite the error
+    /// response we received. If state itself is unverifiable (the probe GET
+    /// fails), this returns Err: refusing to resend costs a retry; a double
+    /// refund costs real money.
+    async fn refund_landed(&self, payment_id: &str, amount_paise: i64) -> Result<bool, ActionServiceError> {
+        let url = format!("{}/payments/{}/refunds?count=100", self.base_url, payment_id);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.key_id, Some(&self.key_secret))
+            .send()
+            .await
+            .map_err(|e| ActionServiceError::RazorpayGateway(format!("refund-state probe failed: {e}")))?;
+
+        if !resp.status().is_success() {
             return Err(ActionServiceError::RazorpayGateway(format!(
-                "razorpay returned {status}: {payload}"
+                "refund-state unverifiable (GET refunds returned {}); refusing to resend a possibly-executed refund",
+                resp.status()
             )));
         }
 
-        tracing::info!(?decision_id, %status, "razorpay call succeeded");
-        Ok(payload)
+        let payload: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ActionServiceError::RazorpayGateway(format!("refund probe decode: {e}")))?;
+        let landed = payload
+            .get("items")
+            .and_then(|i| i.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .any(|r| r.get("amount").and_then(|a| a.as_i64()) == Some(amount_paise))
+            })
+            .unwrap_or(false);
+        Ok(landed)
     }
 }
 
@@ -255,12 +418,20 @@ impl RazorpayGateway for MockGateway {
 }
 
 /// Verify X-Razorpay-Signature: HMAC-SHA256(raw_body, webhook_secret) hex-encoded.
+///
+/// Comparison runs through `verify_slice`, which is constant-time — a string
+/// equality on hex (even case-insensitive) leaks timing information about how
+/// many leading bytes matched, which is exploitable on a payments webhook.
+/// Case-insensitivity comes free from `hex::decode`.
 pub fn verify_webhook_signature(raw_body: &[u8], signature: &str, webhook_secret: &str) -> bool {
     let mut mac = Hmac::<Sha256>::new_from_slice(webhook_secret.as_bytes()).expect("hmac accepts any key length");
     mac.update(raw_body);
-    let expected = hex::encode(mac.finalize().into_bytes());
-    // Constant-time-ish comparison via hmac's verify, or fallback to string eq on lengths
-    expected.eq_ignore_ascii_case(signature)
+    match hex::decode(signature.trim()) {
+        // verify_slice recomputes the tag and compares in constant time; a
+        // malformed/odd-length hex signature is rejected before comparison.
+        Ok(sig_bytes) => mac.verify_slice(&sig_bytes).is_ok(),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]

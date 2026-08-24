@@ -6,13 +6,13 @@ edition = "2021"
 [dependencies]
 risk-governor-types = { path = "../risk-governor-types" }
 action-service = { path = "../action-service" }
+intent-engine = { path = "../intent-engine" }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 async-trait = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
-chrono = { workspace = true }
-serde_json = { workspace = true }

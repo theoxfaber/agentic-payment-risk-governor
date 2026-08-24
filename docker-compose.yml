@@ -1,5 +1,6 @@
-# Phase 2: infra + split workers.
-# action-service still runs on the host (gets its own container last).
+# Production stack: NATS (bus) + Postgres (persistence) + workers + API server.
+# All app services share one image; behavior selected by command override.
+# Credentials come from env (.env) with safe dev defaults.
 
 services:
   nats:
@@ -19,43 +20,82 @@ services:
     image: postgres:16-alpine
     container_name: rg-postgres
     environment:
-      POSTGRES_USER: governor
-      POSTGRES_PASSWORD: governor
-      POSTGRES_DB: governor
+      POSTGRES_USER: ${POSTGRES_USER:-governor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-governor}
+      POSTGRES_DB: ${POSTGRES_DB:-governor}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U governor -d governor"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-governor} -d $${POSTGRES_DB:-governor}"]
       interval: 3s
       timeout: 3s
       retries: 12
 
-  policy-engine:
+  policy-engine-worker:
     build: .
     container_name: rg-policy
     command: ["policy-engine-worker"]
     environment:
       NATS_URL: nats://nats:4222
+      RUST_LOG_FORMAT: json
     depends_on:
       nats:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f policy-engine-worker || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
 
-  evidence-service:
+  evidence-service-worker:
     build: .
     container_name: rg-evidence
     command: ["evidence-worker"]
     environment:
       NATS_URL: nats://nats:4222
+      RUST_LOG_FORMAT: json
+      DATABASE_URL: postgres://${POSTGRES_USER:-governor}:${POSTGRES_PASSWORD:-governor}@postgres:5432/${POSTGRES_DB:-governor}
       EVIDENCE_SEED: /seeds/evidence-seed.json
-    volumes:
-      - ./seeds:/seeds:ro
     depends_on:
       nats:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f evidence-worker || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  governor-server:
+    build: .
+    container_name: rg-server
+    command: ["governor-server"]
+    ports:
+      - "8080:8080"
+    environment:
+      NATS_URL: nats://nats:4222
+      DATABASE_URL: postgres://${POSTGRES_USER:-governor}:${POSTGRES_PASSWORD:-governor}@postgres:5432/${POSTGRES_DB:-governor}
+      BIND_HOST: 0.0.0.0
+      PORT: "8080"
+      RUST_LOG_FORMAT: json
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
 
 volumes:
   pgdata:

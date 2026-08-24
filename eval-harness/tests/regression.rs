@@ -91,3 +91,54 @@ fn detector_contrast_is_preserved() {
         rr.recall * 100.0
     );
 }
+
+// ---------------------------------------------------------------------------
+// HELD-OUT seeds — the detector never saw these worlds during development.
+// These guards make the README's headline numbers a claim about generalization,
+// not memorization.
+// ---------------------------------------------------------------------------
+
+fn world_at(kind: WorldKind, rings: usize, seed: u64) -> dataset_gen::World {
+    generate_world(WorldSpec {
+        kind,
+        n_background: 300,
+        n_rings: rings,
+        ring_size: 3,
+        seed,
+    })
+}
+
+#[test]
+fn held_out_evasion_recall_holds_on_every_unseen_seed() {
+    for seed in eval_harness::HELDOUT_SEEDS {
+        let mut det = InvestigationEngineDetector;
+        let m = evaluate(&world_at(WorldKind::AdversarialEvasion, 6, *seed), &mut det);
+        assert!(
+            m.recall >= 0.90,
+            "seed {seed}: evasion recall {}% < 90% — structurally-linked abusers were cleared",
+            m.recall * 100.0
+        );
+    }
+}
+
+#[test]
+fn held_out_household_false_positives_stay_zero_on_every_unseen_seed() {
+    for seed in eval_harness::HELDOUT_SEEDS {
+        let mut det = InvestigationEngineDetector;
+        let m = evaluate(&world_at(WorldKind::Household, 8, *seed), &mut det);
+        assert_eq!(m.fp, 0, "seed {seed}: innocent household members flagged");
+    }
+}
+
+#[test]
+fn held_out_coincidental_sharing_precision_stays_perfect() {
+    // NAT-style overlap is all legitimate: flagging ANY of it burns real money.
+    for seed in eval_harness::HELDOUT_SEEDS {
+        let mut det = InvestigationEngineDetector;
+        let m = evaluate(&world_at(WorldKind::CoincidentalSharing, 8, *seed), &mut det);
+        assert_eq!(
+            m.fp, 0,
+            "seed {seed}: coincidental-sharing customers flagged — FP precision broken"
+        );
+    }
+}

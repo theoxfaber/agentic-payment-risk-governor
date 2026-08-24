@@ -4,11 +4,20 @@
 //! decision stream polling the real `/v1/decisions` API, with click-through
 //! to full replay (what the governor saw, why it decided) and human-approval
 //! for REVIEW decisions. Served by governor-server; zero build step.
+//!
+//! Every `/v1/*` route requires an API key. The server injects its own key
+//! into this page so the dashboard authenticates like any other client —
+//! the browser never talks to an unauthenticated money-decision endpoint.
+
+/// Escape for safe embedding inside a single-quoted JS string literal.
+fn js_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'").replace('"', "\\\"")
+}
 
 /// The entire UI. Vanilla JS + fetch against governor-server's own API —
 /// no framework, no bundler, nothing that can rot before the demo.
-pub fn page() -> &'static str {
-    r#"<!DOCTYPE html>
+pub fn page(api_key: &str) -> String {
+    let template = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -147,14 +156,16 @@ pub fn page() -> &'static str {
 
 <script>
 'use strict';
-const fmtINR = p => '₹' + (p / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+const API_KEY = '__API_KEY__';
+const authHeaders = () => ({ 'x-api-key': API_KEY });
+const fmtINR = p => '₹' + p.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const esc = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let decisions = [];
 
 async function refresh() {
   try {
-    const r = await fetch('/v1/decisions');
+    const r = await fetch('/v1/decisions', { headers: authHeaders() });
     if (!r.ok) return;
     decisions = await r.json();
     render();
@@ -175,7 +186,10 @@ function render() {
   document.getElementById('st-block').textContent = counts.block;
   document.getElementById('st-prevented').textContent = fmtINR(blockedValue);
 
-  rows.innerHTML = decisions.map(d => `
+  rows.innerHTML = decisions
+    .slice()
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .map(d => `
     <tr onclick="openDetail('${d.decision_id}')">
       <td class="mono">${new Date(d.created_at).toLocaleTimeString()}</td>
       <td class="mono">${esc(d.agent_id)}</td>
@@ -189,7 +203,7 @@ function render() {
 }
 
 async function openDetail(id) {
-  const r = await fetch('/v1/decisions/' + id);
+  const r = await fetch('/v1/decisions/' + id, { headers: authHeaders() });
   const data = await r.json();
   const d = data.decision;
   const ctx = JSON.stringify(d.action.context, null, 1);
@@ -256,7 +270,7 @@ async function resolve(approved) {
   if (!reviewer) { document.getElementById('approve-msg').textContent = 'enter your reviewer id'; return; }
   const r = await fetch(`/v1/decisions/${window.currentId}/approve`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ approved, reviewer_id: reviewer, notes: approved ? 'approved via dashboard' : 'rejected via dashboard' }),
   });
   const out = await r.json();
@@ -274,5 +288,27 @@ refresh();
 setInterval(refresh, 2000);
 </script>
 </body>
-</html>"#
+</html>"#;
+    template.replace("__API_KEY__", &js_escape(api_key))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_embeds_escaped_api_key() {
+        let html = page("rgov_test'key\"with\\quotes");
+        assert!(
+            html.contains(r#"API_KEY = 'rgov_test\'key\"with\\quotes'"#),
+            "api key must be embedded and JS-escaped"
+        );
+    }
+
+    #[test]
+    fn page_attaches_auth_headers_to_every_api_call() {
+        let html = page("k");
+        assert!(html.matches("authHeaders()").count() >= 3);
+        assert!(html.contains("'x-api-key': API_KEY"));
+    }
 }

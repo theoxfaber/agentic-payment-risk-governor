@@ -149,6 +149,10 @@ impl Detector for InvestigationEngineDetector {
 #[derive(Debug, Clone, Serialize)]
 pub struct WorldMetrics {
     pub world: String,
+    /// "calibration" (thresholds were tuned against these worlds) or
+    /// "held-out" (seeds the detector never saw during development).
+    pub split: &'static str,
+    pub seed: u64,
     pub detector: &'static str,
     pub tp: u32,
     pub fp: u32,
@@ -168,6 +172,10 @@ pub struct WorldMetrics {
 }
 
 pub fn evaluate(world: &World, detector: &mut dyn Detector) -> WorldMetrics {
+    evaluate_split(world, detector, "unspecified", 0)
+}
+
+pub fn evaluate_split(world: &World, detector: &mut dyn Detector, split: &'static str, seed: u64) -> WorldMetrics {
     let detections = detector.scan(world);
 
     let mut tp = 0u32;
@@ -226,6 +234,8 @@ pub fn evaluate(world: &World, detector: &mut dyn Detector) -> WorldMetrics {
 
     WorldMetrics {
         world: world.name.clone(),
+        split,
+        seed,
         detector: detector.name(),
         tp,
         fp,
@@ -242,20 +252,34 @@ pub fn evaluate(world: &World, detector: &mut dyn Detector) -> WorldMetrics {
     }
 }
 
-/// The full sweep: every canonical world × every standard detector.
-pub fn run_all() -> Vec<WorldMetrics> {
+/// Detector names in canonical order (used by the CLI aggregate output).
+pub const DETECTORS: &[&str] = &[
+    "per_customer_rate_rule",
+    "structural_cluster_only",
+    "investigation_engine",
+];
+
+/// The seed every threshold in the investigation engine was tuned against.
+pub const CALIBRATION_SEED: u64 = 2026;
+
+/// Seeds the detector NEVER saw during development. Headline numbers are
+/// reported on these worlds only — a model evaluated on the data it was
+/// tuned against proves nothing (Track-02 bar: held-out test set).
+pub const HELDOUT_SEEDS: &[u64] = &[31_415, 27_182, 16_180];
+
+fn run_world_set(seed: u64, split: &'static str) -> Vec<WorldMetrics> {
     use dataset_gen::WorldKind;
     let specs = [
-        WorldSpecShorthand::new(WorldKind::Normal, 300, 0, 3),
-        WorldSpecShorthand::new(WorldKind::Household, 300, 8, 3),
+        WorldSpecShorthand::new(WorldKind::Normal, 300, 0, 3, seed),
+        WorldSpecShorthand::new(WorldKind::Household, 300, 8, 3, seed),
         // Coincidental sharing: NAT IPs, popular devices, reused addresses.
         // All legit — measures honest precision under real-world overlap.
-        WorldSpecShorthand::new(WorldKind::CoincidentalSharing, 300, 8, 3),
-        WorldSpecShorthand::new(WorldKind::ReturnAbuse, 300, 6, 3),
-        WorldSpecShorthand::new(WorldKind::RefundAbuse, 300, 6, 3),
-        WorldSpecShorthand::new(WorldKind::DistributedRing, 300, 6, 3),
-        WorldSpecShorthand::new(WorldKind::MerchantCollusion, 300, 6, 3),
-        WorldSpecShorthand::new(WorldKind::AdversarialEvasion, 300, 6, 3),
+        WorldSpecShorthand::new(WorldKind::CoincidentalSharing, 300, 8, 3, seed),
+        WorldSpecShorthand::new(WorldKind::ReturnAbuse, 300, 6, 3, seed),
+        WorldSpecShorthand::new(WorldKind::RefundAbuse, 300, 6, 3, seed),
+        WorldSpecShorthand::new(WorldKind::DistributedRing, 300, 6, 3, seed),
+        WorldSpecShorthand::new(WorldKind::MerchantCollusion, 300, 6, 3, seed),
+        WorldSpecShorthand::new(WorldKind::AdversarialEvasion, 300, 6, 3, seed),
     ];
 
     let mut results = Vec::new();
@@ -266,9 +290,30 @@ pub fn run_all() -> Vec<WorldMetrics> {
             &mut StructuralClusterOnly::default() as &mut dyn Detector,
             &mut InvestigationEngineDetector as &mut dyn Detector,
         ] {
-            results.push(evaluate(&world, det));
+            results.push(evaluate_split(&world, det, split, seed));
         }
     }
+    results
+}
+
+/// Calibration worlds: what the thresholds were developed against. Shown for
+/// transparency; NOT the headline numbers.
+pub fn run_calibration() -> Vec<WorldMetrics> {
+    run_world_set(CALIBRATION_SEED, "calibration")
+}
+
+/// Held-out worlds: three fresh seeds per world kind. THE headline numbers.
+pub fn run_held_out() -> Vec<WorldMetrics> {
+    HELDOUT_SEEDS
+        .iter()
+        .flat_map(|s| run_world_set(*s, "held-out"))
+        .collect()
+}
+
+/// The full sweep: calibration + held-out.
+pub fn run_all() -> Vec<WorldMetrics> {
+    let mut results = run_calibration();
+    results.extend(run_held_out());
     results
 }
 
@@ -277,28 +322,30 @@ struct WorldSpecShorthand {
 }
 
 impl WorldSpecShorthand {
-    fn new(kind: dataset_gen::WorldKind, bg: usize, rings: usize, size: usize) -> Self {
+    fn new(kind: dataset_gen::WorldKind, bg: usize, rings: usize, size: usize, seed: u64) -> Self {
         Self {
             spec: dataset_gen::WorldSpec {
                 kind,
                 n_background: bg,
                 n_rings: rings,
                 ring_size: size,
-                seed: 2026,
+                seed,
             },
         }
     }
 }
 
 /// Markdown table for the README — one row per (world, detector).
-pub fn render_markdown(results: &[WorldMetrics]) -> String {
+pub fn render_markdown(results: &[&WorldMetrics]) -> String {
     let mut s = String::from(
-        "| World | Detector | Precision | Recall | F1 | FP cost | FN cost | Prevented | Auto | Review |\n\
-         |---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+        "| Split | Seed | World | Detector | Precision | Recall | F1 | FP cost | FN cost | Prevented | Auto | Review |\n\
+         |---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
     );
     for m in results {
         s.push_str(&format!(
-            "| {} | {} | {:.0}% | {:.0}% | {:.2} | ₹{:.0} | ₹{:.0} | ₹{:.0} | {} | {} |\n",
+            "| {} | {} | {} | {} | {:.0}% | {:.0}% | {:.2} | ₹{:.0} | ₹{:.0} | ₹{:.0} | {} | {} |\n",
+            m.split,
+            m.seed,
             m.world,
             m.detector,
             m.precision * 100.0,

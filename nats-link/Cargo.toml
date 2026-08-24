@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 risk-governor-types = { path = "../risk-governor-types" }
 action-service = { path = "../action-service" }
+pg-store = { path = "../pg-store" }
 policy-engine = { path = "../policy-engine" }
 evidence-service = { path = "../evidence-service" }
 risk-governor-correlation = { path = "../risk-governor-correlation" }

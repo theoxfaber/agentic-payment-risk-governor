@@ -9,7 +9,6 @@
 
 use action_service::{ActionServiceError, GatheredEvidence};
 use async_nats::Client;
-use evidence_service::InMemoryEvidenceStore;
 use futures::StreamExt;
 use policy_engine::PolicyEngine as InProcessPolicyEngine;
 use risk_governor_correlation::{decode, scope_correlation, Envelope};
@@ -293,7 +292,10 @@ impl action_service::EvidenceService for NatsEvidenceService {
 
 /// Evidence worker: serves gather (request/reply) + record_action
 /// (fire-and-forget) against the provided store.
-pub fn spawn_evidence_worker(client: Client, store: Arc<InMemoryEvidenceStore>) -> JoinHandle<()> {
+pub fn spawn_evidence_worker<S: evidence_service::EvidenceStore + 'static>(
+    client: Client,
+    store: Arc<S>,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut gather_sub = match client.subscribe(SUBJECT_EVIDENCE_GATHER).await {
             Ok(s) => s,
@@ -332,7 +334,11 @@ pub fn spawn_evidence_worker(client: Client, store: Arc<InMemoryEvidenceStore>) 
     })
 }
 
-async fn handle_gather(client: Client, store: Arc<InMemoryEvidenceStore>, msg: async_nats::Message) {
+async fn handle_gather<S: evidence_service::EvidenceStore + 'static>(
+    client: Client,
+    store: Arc<S>,
+    msg: async_nats::Message,
+) {
     let env: Envelope<AgentActionRequest> = match decode(&msg.payload) {
         Ok(env) => env,
         Err(e) => {
@@ -370,8 +376,7 @@ async fn handle_gather(client: Client, store: Arc<InMemoryEvidenceStore>, msg: a
     .await;
 }
 
-async fn handle_record(store: Arc<InMemoryEvidenceStore>, msg: async_nats::Message) {
-    use evidence_service::EvidenceStore as _;
+async fn handle_record<S: evidence_service::EvidenceStore + 'static>(store: Arc<S>, msg: async_nats::Message) {
     let env: Envelope<AgentActionRequest> = match decode(&msg.payload) {
         Ok(env) => env,
         Err(e) => {

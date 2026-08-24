@@ -1,0 +1,16 @@
+[package]
+name = "intent-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }

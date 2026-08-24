@@ -1,0 +1,19 @@
+[package]
+name = "pg-store"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risk-governor-types = { path = "../risk-governor-types" }
+audit-service = { path = "../audit-service" }
+evidence-service = { path = "../evidence-service" }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }

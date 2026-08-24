@@ -9,6 +9,7 @@ risk-governor-correlation = { path = "../risk-governor-correlation" }
 action-service = { path = "../action-service" }
 policy-engine = { path = "../policy-engine" }
 risk-engine = { path = "../risk-engine" }
+intent-engine = { path = "../intent-engine" }
 evidence-service = { path = "../evidence-service" }
 audit-service = { path = "../audit-service" }
 razorpay-gateway = { path = "../razorpay-gateway" }
@@ -18,6 +19,7 @@ dataset-gen = { path = "../dataset-gen" }
 webhook-consumer = { path = "../webhook-consumer" }
 risk-graph = { path = "../risk-graph" }
 dashboard = { path = "../dashboard" }
+pg-store = { path = "../pg-store" }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -32,3 +34,6 @@ async-trait = { workspace = true }
 [[bin]]
 name = "governor-server"
 path = "src/main.rs"
+
+[dev-dependencies]
+tower = { workspace = true, features = ["util"] }
