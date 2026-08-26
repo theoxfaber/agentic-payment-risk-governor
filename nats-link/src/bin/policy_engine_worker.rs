@@ -13,6 +13,8 @@ async fn main() -> anyhow::Result<()> {
         .await?;
 
     tracing::info!("policy-engine-worker starting");
-    nats_link::spawn_policy_worker(client).await.ok();
-    Ok(())
+    // Propagate the worker result: a failed subscription must exit NON-ZERO
+    // so orchestrators see the failure — never an idle process that looks
+    // healthy while serving nothing.
+    nats_link::run_policy_worker(client).await
 }

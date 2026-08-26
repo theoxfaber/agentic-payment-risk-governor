@@ -34,15 +34,14 @@ async fn main() -> anyhow::Result<()> {
                 store.seed_from_json(raw).await?;
             }
             tracing::info!("evidence-worker starting (Postgres-backed)");
-            nats_link::spawn_evidence_worker(client, store).await.ok();
+            nats_link::run_evidence_worker(client, store).await
         }
         _ => {
             let store = Arc::new(build_mem_store(seed_raw.as_deref()).await?);
             tracing::info!("evidence-worker starting (in-memory)");
-            nats_link::spawn_evidence_worker(client, store).await.ok();
+            nats_link::run_evidence_worker(client, store).await
         }
     }
-    Ok(())
 }
 
 /// Build an InMemoryEvidenceStore from the optional seed file.

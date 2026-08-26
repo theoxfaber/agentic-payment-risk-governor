@@ -215,12 +215,17 @@ pub fn run_degradation_sweep(heldout_seeds: &[u64]) -> Vec<DegradationRow> {
 /// the detector was never tuned against. Answers "is 100% a property of three
 /// hand-built worlds?" with statistics instead of vibes.
 ///
-/// Returns (pooled_precision, pooled_recall, worlds_run).
-pub fn run_randomized_sweep(draws_per_kind: usize, master_seed: u64) -> (f64, f64, usize) {
+/// Legitimate-overlap worlds (household / coincidental sharing) are scored
+/// INTO the pooled precision — they contain zero abusers, so every flag is a
+/// false positive, and excluding them would structurally inflate precision.
+///
+/// Returns (pooled_precision, pooled_recall, worlds_run, legit_flagged).
+pub fn run_randomized_sweep(draws_per_kind: usize, master_seed: u64) -> (f64, f64, usize, u32) {
     let mut rng = StdRng::seed_from_u64(master_seed);
     let mut tp = 0u32;
     let mut fp = 0u32;
     let mut fn_total = 0u32;
+    let mut legit_flagged = 0u32;
     let mut worlds = 0usize;
 
     for _ in 0..draws_per_kind {
@@ -238,7 +243,11 @@ pub fn run_randomized_sweep(draws_per_kind: usize, master_seed: u64) -> (f64, f6
             worlds += 1;
 
             if LEGIT_OVERLAP_KINDS.contains(&kind) {
-                continue; // no abusers there; FP tracked separately below
+                // Pure-legit world: every flag is a false positive and MUST
+                // count against pooled precision.
+                legit_flagged += m.fp;
+                fp += m.fp;
+                continue;
             }
             tp += m.tp;
             fp += m.fp;
@@ -256,7 +265,7 @@ pub fn run_randomized_sweep(draws_per_kind: usize, master_seed: u64) -> (f64, f6
     } else {
         tp as f64 / (tp + fn_total) as f64
     };
-    (precision, recall, worlds)
+    (precision, recall, worlds, legit_flagged)
 }
 
 /// Detector name used in robustness output (keeps DETECTORS referenced here).

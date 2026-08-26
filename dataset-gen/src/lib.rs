@@ -61,17 +61,34 @@ pub struct World {
     pub abuse_rings: Vec<Vec<String>>,
 }
 
-/// Population baseline computed from the world's own background customers —
-/// the investigator compares clusters against the world it lives in.
+/// Population baseline estimated WITHOUT ground-truth labels.
+///
+/// Production cannot oracle-filter abusers out of the reference population —
+/// the earlier version did exactly that (label leakage into detection). The
+/// honest estimator is label-free and contamination-robust instead:
+///
+///   1. Per-customer return rates are pooled over ALL customers.
+///   2. The top decile of per-customer rates is trimmed before the final
+///      pool, so a small abusive minority (~6% here) cannot inflate the
+///      baseline and hide inside it.
+///
+/// This mirrors standard robust baselining in fraud analytics (trim/winsorize
+/// the heavy tail rather than assume you know who the fraudsters are).
 pub fn baseline_of(world: &World) -> investigation_engine::Baseline {
-    let bg: Vec<&CustomerBehavior> = world
+    let mut rates: Vec<(f64, &CustomerBehavior)> = world
         .behaviors
-        .iter()
-        .filter(|(id, _)| !world.ground_truth.get(id.as_str()).copied().unwrap_or(false))
-        .map(|(_, b)| b)
+        .values()
+        .filter(|b| b.order_count > 0)
+        .map(|b| (b.return_count.max(b.refund_count) as f64 / b.order_count as f64, b))
         .collect();
-    let orders: u32 = bg.iter().map(|b| b.order_count).sum();
-    let returns: u32 = bg.iter().map(|b| b.return_count).sum();
+    rates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Trim the top 10% of per-customer rates (label-free contamination guard).
+    let keep = rates.len().saturating_sub(rates.len() / 10).max(1);
+    let kept = &rates[..keep];
+
+    let orders: u32 = kept.iter().map(|(_, b)| b.order_count).sum();
+    let returns: u32 = kept.iter().map(|(_, b)| b.return_count.max(b.refund_count)).sum();
     let rate = if orders == 0 {
         0.05
     } else {

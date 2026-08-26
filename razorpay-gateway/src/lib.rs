@@ -307,7 +307,12 @@ impl HttpGateway {
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         let url = format!("{}/payments/{}/refund", self.base_url, payment_id);
-        let body = json!({ "amount": request.amount, "speed": "normal" });
+        // The decision_id rides along as the refund's `receipt` — Razorpay
+        // echoes it back on the refund entity. That makes the lost-response
+        // probe EXACT: we match our own receipt, not merely a same-amount
+        // refund some other flow may legitimately have created.
+        let receipt = decision_id.to_string();
+        let body = json!({ "amount": request.amount, "speed": "normal", "receipt": receipt });
 
         let mut attempt = 0u32;
         loop {
@@ -342,7 +347,7 @@ impl HttpGateway {
             }
 
             // Layer 2: lost-response check BEFORE any resend of an ambiguous 5xx.
-            if ambiguous_5xx && self.refund_landed(payment_id, request.amount).await? {
+            if ambiguous_5xx && self.refund_landed(payment_id, request.amount, &receipt).await? {
                 tracing::warn!(
                     ?decision_id,
                     %status,
@@ -378,12 +383,19 @@ impl HttpGateway {
         }
     }
 
-    /// True when a refund with this exact amount already exists on the
-    /// payment — i.e. an earlier attempt actually processed despite the error
-    /// response we received. If state itself is unverifiable (the probe GET
-    /// fails), this returns Err: refusing to resend costs a retry; a double
-    /// refund costs real money.
-    async fn refund_landed(&self, payment_id: &str, amount_paise: i64) -> Result<bool, ActionServiceError> {
+    /// True when OUR refund already exists on the payment — i.e. an earlier
+    /// attempt processed despite the error response we received. Matching is
+    /// by the `receipt` we stamp with the decision_id; amount is only a
+    /// fallback for legacy refunds created without a receipt, so an unrelated
+    /// same-amount refund can never false-positive the dedup. If state itself
+    /// is unverifiable (the probe GET fails), this returns Err: refusing to
+    /// resend costs a retry; a double refund costs real money.
+    async fn refund_landed(
+        &self,
+        payment_id: &str,
+        amount_paise: i64,
+        receipt: &str,
+    ) -> Result<bool, ActionServiceError> {
         let url = format!("{}/payments/{}/refunds?count=100", self.base_url, payment_id);
         let resp = self
             .http
@@ -408,9 +420,14 @@ impl HttpGateway {
             .get("items")
             .and_then(|i| i.as_array())
             .map(|items| {
-                items
-                    .iter()
-                    .any(|r| r.get("amount").and_then(|a| a.as_i64()) == Some(amount_paise))
+                items.iter().any(|r| {
+                    match r.get("receipt").and_then(|s| s.as_str()) {
+                        // Our receipt → ours, regardless of amount.
+                        Some(rcpt) => rcpt == receipt,
+                        // Legacy refunds carry no receipt: fall back to amount.
+                        None => r.get("amount").and_then(|a| a.as_i64()) == Some(amount_paise),
+                    }
+                })
             })
             .unwrap_or(false);
         Ok(landed)

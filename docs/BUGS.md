@@ -81,6 +81,125 @@ generators. Determinism preserved via the seeded StdRng.
 
 ---
 
+## Audit-driven hardening pass (pre-submission review)
+
+The following were found by a line-by-line audit of the whole tree.
+
+## 6. Concurrent approvals could double-execute a payment (TOCTOU)
+
+**Review resolution · caught by:** manual concurrency analysis; pinned by the
+new `concurrent_approvals_execute_exactly_once` test
+
+`approve_decision` read the decision (read lock), checked `human_review.is_none()`,
+then awaited the gateway call, then wrote back. Two simultaneous approvers
+both passed the check during the await window → both executed the payment.
+In a system whose entire job is bounded money movement, this was the worst
+bug in the repo.
+
+**Fix:** claim protocol — the decision is *removed* from the map under the
+write lock before any await point; concurrent approvers now see 404. The
+claim is restored on every failure path (already reviewed, wrong state,
+gateway error), so the queue can never silently lose a held payment, and a
+failed execution restores it UNRESOLVED for retry with the failure in the
+audit trail.
+
+## 7. The dashboard served the server's API key to unauthenticated callers
+
+**Dashboard · caught by:** security review of `routes::dashboard_page`
+
+The HTML page embedded the live API key so its fetches would authenticate.
+Anyone who could reach `/` or `/dashboard` owned full `/v1/*` access,
+including approving payments. Safe only while bound to 127.0.0.1 — one
+`BIND_HOST=0.0.0.0` away from game over.
+
+**Fix:** page carries no secret. Reviewers paste their key once in the
+browser (sessionStorage); every fetch attaches it like any other client; a
+401 evicts the stored key and re-prompts.
+
+## 8. Population baseline was sanitized with ground-truth labels
+
+**Dataset generation · caught by:** label-leakage review of `baseline_of`
+
+The "population baseline" excluded abusers using ground truth — information
+no production baseline can have. Effect size was small but it is label
+information flowing into detection, which poisons the meaning of held-out
+numbers.
+
+**Fix:** label-free robust estimation — pooled per-customer rates over ALL
+customers with the top decile trimmed, so a small abusive minority cannot
+inflate its own hiding place. Honest side effect visible in the eval table:
+the rules-only strawman now flags a few household customers it previously
+"magically" missed.
+
+## 9. Randomized-sweep precision silently dropped legitimate-world FPs
+
+**Robustness harness · caught by:** comment-vs-code mismatch (`// FP tracked
+separately below` — nothing tracked them)
+
+The randomized-world sweep skipped household/coincidental-sharing worlds when
+pooling precision. Those worlds contain zero abusers, so every flag there is
+a false positive — excluding them structurally inflated the headline
+precision of a report whose thesis is honest FP accounting.
+
+**Fix:** legit-world FPs are pooled INTO precision and reported explicitly
+(`legit customers flagged: N`). Regression test now asserts zero.
+
+## 10. Misconfigured custom rules failed OPEN
+
+**Policy engine · caught by:** fail-open pattern review (`_ => false`)
+
+An unrecognized condition string evaluated to false → a typo'd BLOCK rule
+silently allowed everything it was written to stop.
+
+**Fix:** tri-state rule outcome; unknown conditions are reported as threshold
+violations ("fail-closed") and block the action.
+
+## 11. Validation existed, tested… and not called by the pipeline
+
+**Action service · caught by:** call-graph audit
+
+`validate_request` had seven passing unit tests but nothing invoked it inside
+the pipeline; negative/zero amounts flowed through policy, risk, and into
+combiner logic. (The HTTP layer did validate — mapping the error to HTTP 500,
+which misclassified a caller mistake as a server fault.)
+
+**Fix:** validation runs as step zero of `process_inner` (every entry path:
+HTTP, NATS, demos), and the route maps `Validation` errors to 400.
+
+## 12. The intent-contradiction score was computed end-to-end and ignored
+
+**Combiner · caught by:** data-flow audit
+
+`intent_mismatch_score` was calculated, audited, serialized into every
+decision… and read by nobody. The "detects lying agents" story was inert.
+
+**Fix:** combiner consumes it — mismatch ≥ 0.5 injects an `intent_contradiction`
+rule → forced human REVIEW (never auto-block; too gameable). Pinned by tests
+in both directions.
+
+## 13. NATS workers exited 0 when they couldn't subscribe
+
+**Workers · caught by:** orchestration review (`.ok()` on join handles)
+
+A worker that failed to subscribe logged an error and returned; the binary
+then exited SUCCESSFULLY. Under systemd/K8s it looks healthy while serving
+nothing.
+
+**Fix:** `run_*_worker` functions return the subscription result; binaries
+propagate it and exit non-zero on failure.
+
+## 14. Demo entities seeded unconditionally into production databases
+
+**Bootstrap · caught by:** deployment-path review
+
+Every boot wrote demo agents + a default merchant policy (with hardcoded ₹
+limits) into whatever backend was configured — including Postgres.
+
+**Fix:** in-memory keeps seeding for dev ergonomics; Postgres requires
+explicit `SEED_DEMO=true`.
+
+---
+
 ## Known limitations (honest list)
 
 | Limitation | Why | Plan |

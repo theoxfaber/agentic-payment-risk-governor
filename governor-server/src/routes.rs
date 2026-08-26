@@ -23,10 +23,11 @@ pub(crate) async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResp
     )
 }
 
-/// The dashboard IS the product demo — root serves it directly. It carries
-/// the server's API key so its fetches pass the same auth as every client.
-pub(crate) async fn dashboard_page(State(state): State<Arc<AppState>>) -> axum::response::Html<String> {
-    axum::response::Html(dashboard::page(&state.api_key))
+/// The dashboard IS the product demo — root serves it directly. The page is
+/// unauthenticated and carries NO secret: reviewers paste their API key in
+/// the browser (sessionStorage) — never baked into served HTML.
+pub(crate) async fn dashboard_page() -> axum::response::Html<String> {
+    axum::response::Html(dashboard::page())
 }
 
 /// Wire format for submissions: caller supplies business fields, server owns
@@ -70,10 +71,15 @@ pub(crate) async fn submit_action(
         correlation_id: generate_correlation_id(),
     };
 
-    action_service::validate_request(&request)?;
+    // Client-supplied business fields: a violation is the CALLER's error →
+    // 400, never a 500.
+    action_service::validate_request(&request).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
     let decision = state.svc.process_action(request).await?;
     state.metrics.record(decision.decision);
+    // Drift monitoring: every scored action feeds the risk-score histogram
+    // (PSI at /metrics vs SCORE_REFERENCE_JSON when configured).
+    state.metrics.record_score(decision.risk_result.risk_score);
     // Every ALLOW fired one money-movement call inside process_action.
     if decision.decision == DecisionOutcome::Allow {
         state.metrics.count_execution();
@@ -143,6 +149,11 @@ pub(crate) struct ApproveBody {
 /// Resolve a REVIEW. An approval executes the held action against the
 /// gateway; a rejection closes it as BLOCK-with-human-context. Either way the
 /// human's identity lands in the immutable audit trail.
+///
+/// Concurrency: the decision is CLAIMED (removed from the map) under the
+/// write lock before any await point, so two simultaneous approvers can never
+/// both pass the already-reviewed guard and double-execute the payment.
+/// The claim is restored if resolution cannot proceed.
 pub(crate) async fn approve_decision(
     State(state): State<Arc<AppState>>,
     Path(decision_id): Path<Uuid>,
@@ -152,21 +163,35 @@ pub(crate) async fn approve_decision(
         return Err(ApiError::bad_request("reviewer_id is required".into()));
     }
 
-    let mut decision = state
-        .decisions
-        .read()
-        .expect("decisions lock")
-        .get(&decision_id)
-        .cloned()
-        .ok_or(ApiError::not_found(decision_id))?;
+    // Atomic claim: remove under the write lock. A concurrent approver now
+    // sees None (404) instead of a stale unreviewed copy — no check-then-act
+    // race across the gateway await.
+    let mut decision = {
+        let mut map = state.decisions.write().expect("decisions lock");
+        map.remove(&decision_id).ok_or(ApiError::not_found(decision_id))?
+    };
+
+    // Restore-on-reject helper: the claim must go back or the queue loses it.
+    // The error value is built FIRST — it may read from the claim.
+    macro_rules! restore_and {
+        ($err:expr) => {{
+            let err = $err;
+            state
+                .decisions
+                .write()
+                .expect("decisions lock")
+                .insert(decision_id, decision);
+            return Err(err);
+        }};
+    }
 
     if decision.human_review.is_some() {
-        return Err(ApiError::bad_request(format!(
+        restore_and!(ApiError::bad_request(format!(
             "decision {decision_id} already reviewed"
         )));
     }
     if decision.decision != DecisionOutcome::Review {
-        return Err(ApiError::bad_request(format!(
+        restore_and!(ApiError::bad_request(format!(
             "decision {decision_id} is {:?}, not review — nothing to resolve",
             decision.decision
         )));
@@ -195,20 +220,43 @@ pub(crate) async fn approve_decision(
         .await;
 
     if body.approved {
-        state.metrics.count_execution();
-        let response = state.gateway.execute(&decision.action, decision_id).await?;
-        state
-            .audit
-            .record(
-                AuditEventType::RazorpayCalled,
-                Some(decision_id),
-                serde_json::json!({
-                    "via_human_approval": true,
-                    "reviewer_id": body.reviewer_id,
-                    "response": response,
-                }),
-            )
-            .await;
+        match state.gateway.execute(&decision.action, decision_id).await {
+            Ok(response) => {
+                state.metrics.count_execution();
+                state
+                    .audit
+                    .record(
+                        AuditEventType::RazorpayCalled,
+                        Some(decision_id),
+                        serde_json::json!({
+                            "via_human_approval": true,
+                            "reviewer_id": body.reviewer_id,
+                            "response": response,
+                        }),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                // Money did NOT move (gateway errored). Restore the decision
+                // UNRESOLVED so a reviewer can retry, and record the failed
+                // attempt so replay shows why.
+                decision.human_review = None;
+                state
+                    .audit
+                    .record(
+                        AuditEventType::RazorpayCalled,
+                        Some(decision_id),
+                        serde_json::json!({
+                            "via_human_approval": true,
+                            "reviewer_id": body.reviewer_id,
+                            "status": "execution_failed",
+                            "error": e.to_string(),
+                        }),
+                    )
+                    .await;
+                restore_and!(ApiError::internal(format!("gateway execution failed: {e}")));
+            }
+        }
     }
 
     state
@@ -393,12 +441,69 @@ mod tests {
     #[tokio::test]
     async fn submit_rejects_invalid_business_fields() {
         let state = test_state().await;
-        // negative amount fails validate_request before any pipeline runs
+        // negative amount fails validate_request before any pipeline runs —
+        // a caller mistake must surface as 400, not a server error.
         let result = submit_action(State(state), submit_body("agent-trusted-01", -1)).await;
         assert!(
-            matches!(result, Err(ref e) if e.status == axum::http::StatusCode::INTERNAL_SERVER_ERROR),
-            "validation failure maps to an error response"
+            matches!(result, Err(ref e) if e.status == axum::http::StatusCode::BAD_REQUEST),
+            "validation failure maps to 400"
         );
+    }
+
+    /// THE race guard: two concurrent approvals of the same decision. The
+    /// claim-under-lock protocol means exactly ONE may execute the payment;
+    /// the other gets 404 (claim taken) or 400 (already resolved) — never a
+    /// second gateway call.
+    #[tokio::test]
+    async fn concurrent_approvals_execute_exactly_once() {
+        let state = test_state().await;
+        let decision = submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
+            .await
+            .unwrap();
+        assert_eq!(decision.decision, DecisionOutcome::Review);
+
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let st = state.clone();
+            let did = decision.decision_id;
+            handles.push(tokio::spawn(async move {
+                approve_decision(
+                    State(st),
+                    Path(did),
+                    Json(ApproveBody {
+                        approved: true,
+                        reviewer_id: format!("analyst-{i}"),
+                        notes: None,
+                    }),
+                )
+                .await
+            }));
+        }
+
+        let mut successes = 0usize;
+        for h in handles {
+            if h.await.unwrap().is_ok() {
+                successes += 1;
+            }
+        }
+        assert_eq!(successes, 1, "exactly one concurrent approver may win");
+
+        // The gateway fired ONCE, not once per approver.
+        let body = state.metrics.prometheus();
+        assert!(
+            body.contains("risk_governor_gateway_executions_total 1"),
+            "double execution detected:\n{body}"
+        );
+
+        // Resolved decision is back in the map with the winner's review.
+        let resolved = state
+            .decisions
+            .read()
+            .expect("decisions lock")
+            .get(&decision.decision_id)
+            .cloned()
+            .expect("resolved decision restored");
+        assert_eq!(resolved.human_review.map(|h| h.decision), Some(DecisionOutcome::Allow));
     }
 
     #[tokio::test]

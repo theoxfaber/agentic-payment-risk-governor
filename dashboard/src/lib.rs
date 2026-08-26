@@ -5,19 +5,20 @@
 //! to full replay (what the governor saw, why it decided) and human-approval
 //! for REVIEW decisions. Served by governor-server; zero build step.
 //!
-//! Every `/v1/*` route requires an API key. The server injects its own key
-//! into this page so the dashboard authenticates like any other client —
-//! the browser never talks to an unauthenticated money-decision endpoint.
-
-/// Escape for safe embedding inside a single-quoted JS string literal.
-fn js_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'").replace('"', "\\\"")
-}
+//! Security: this page is UNAUTHENTICATED, so it must never carry a
+//! credential. The reviewer pastes their API key once in the browser; it is
+//! kept in sessionStorage and attached to every fetch — exactly like any
+//! other client of the /v1/* surface. A previous version embedded the
+//| server's own key into this page's HTML, which handed full API access to
+//! anyone who could reach the port.
 
 /// The entire UI. Vanilla JS + fetch against governor-server's own API —
 /// no framework, no bundler, nothing that can rot before the demo.
-pub fn page(api_key: &str) -> String {
-    let template = r#"<!DOCTYPE html>
+pub fn page() -> String {
+    PAGE_TEMPLATE.to_string()
+}
+
+const PAGE_TEMPLATE: &str = r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -156,16 +157,32 @@ pub fn page(api_key: &str) -> String {
 
 <script>
 'use strict';
-const API_KEY = 'DASHBOARD_API_KEY_PLACEHOLDER';
-const authHeaders = () => ({ 'x-api-key': API_KEY });
+// Credential gate: the page itself is unauthenticated and carries NO secret.
+// The reviewer's API key lives only in this browser (sessionStorage) and is
+// attached to every /v1/* fetch, same as any other client.
+let API_KEY = sessionStorage.getItem('rgov_key') || '';
+function askKey() {
+  const k = window.prompt('Risk Governor API key (X-API-Key):');
+  if (k && k.trim()) { API_KEY = k.trim(); sessionStorage.setItem('rgov_key', API_KEY); }
+  return API_KEY;
+}
+if (!API_KEY) askKey();
+const authHeaders = () => (API_KEY ? { 'x-api-key': API_KEY } : {});
+function unauthorized() {
+  sessionStorage.removeItem('rgov_key');
+  API_KEY = '';
+  askKey();
+}
 const fmtINR = p => '₹' + p.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 const esc = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let decisions = [];
 
 async function refresh() {
+  if (!API_KEY && !askKey()) return;
   try {
     const r = await fetch('/v1/decisions', { headers: authHeaders() });
+    if (r.status === 401) { unauthorized(); return; }
     if (!r.ok) return;
     decisions = await r.json();
     render();
@@ -190,7 +207,7 @@ function render() {
     .slice()
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
     .map(d => `
-    <tr onclick="openDetail('${d.decision_id}')">
+    <tr onclick="openDetail('${esc(d.decision_id)}')">
       <td class="mono">${new Date(d.created_at).toLocaleTimeString()}</td>
       <td class="mono">${esc(d.agent_id)}</td>
       <td>${esc(String(d.action_type))}</td>
@@ -268,11 +285,12 @@ async function openDetail(id) {
 async function resolve(approved) {
   const reviewer = document.getElementById('reviewer').value.trim();
   if (!reviewer) { document.getElementById('approve-msg').textContent = 'enter your reviewer id'; return; }
-  const r = await fetch(`/v1/decisions/${window.currentId}/approve`, {
+  const r = await fetch(`/v1/decisions/${encodeURIComponent(window.currentId)}/approve`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ approved, reviewer_id: reviewer, notes: approved ? 'approved via dashboard' : 'rejected via dashboard' }),
   });
+  if (r.status === 401) { unauthorized(); return; }
   const out = await r.json();
   if (!r.ok) { document.getElementById('approve-msg').textContent = out.error || 'failed'; return; }
   closeDetail(); refresh();
@@ -289,28 +307,48 @@ setInterval(refresh, 2000);
 </script>
 </body>
 </html>"#;
-    template.replace("DASHBOARD_API_KEY_PLACEHOLDER", &js_escape(api_key))
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn page_embeds_escaped_api_key() {
-        // Synthetic fixture value — no real credential, deliberately malformed
-        // to prove escaping works.
-        let html = page("rgov_test'key\"with\\quotes");
+    fn page_carries_no_credential() {
+        // The page is unauthenticated: it must never embed a key, a
+        // placeholder that gets replaced, or any server-side secret.
+        let html = page();
+        assert!(!html.contains("DASHBOARD_API_KEY_PLACEHOLDER"));
+        // No quoted secret value assigned to the JS variable (the only
+        // allowed assignments are sessionStorage reads, prompt input, and
+        // the empty-string eviction).
+        for line in html.lines() {
+            if let Some(rest) = line.trim().strip_prefix("let API_KEY =") {
+                assert!(rest.contains("sessionStorage"), "suspicious embedded key: {line}");
+            }
+            if let Some(rest) = line.trim().strip_prefix("API_KEY =") {
+                assert_eq!(rest.trim(), "'';", "suspicious embedded key: {line}");
+            }
+        }
         assert!(
-            html.contains(r#"API_KEY = 'rgov_test\'key\"with\\quotes'"#),
-            "api key must be embedded and JS-escaped"
+            html.contains("sessionStorage.getItem('rgov_key')"),
+            "key must come from the browser session"
         );
     }
 
     #[test]
     fn page_attaches_auth_headers_to_every_api_call() {
-        let html = page("k");
+        let html = page();
         assert!(html.matches("authHeaders()").count() >= 3);
         assert!(html.contains("'x-api-key': API_KEY"));
+        assert!(html.contains("r.status === 401"), "401 must evict the stored key");
+    }
+
+    #[test]
+    fn page_escapes_interpolated_ids_in_html() {
+        let html = page();
+        assert!(
+            html.contains("openDetail('${esc(d.decision_id)}')"),
+            "ids interpolated into HTML must be escaped"
+        );
     }
 }

@@ -254,7 +254,7 @@ impl Investigator {
         }
 
         if !member_behaviors.is_empty() {
-            let cluster_rate = weighted_return_rate(&member_behaviors);
+            let cluster_rate = cluster_return_rate(&member_behaviors);
             let threshold = self.baseline.avg_return_rate * self.baseline.return_rate_anomaly_multiplier;
             if cluster_rate >= threshold {
                 supporting.push(EvidenceItem {
@@ -423,7 +423,10 @@ fn external_of(id: &EntityId) -> Option<&str> {
     id.0.split_once(':').map(|(_, ext)| ext)
 }
 
-fn weighted_return_rate(bs: &[&CustomerBehavior]) -> f64 {
+/// Pooled return rate across the cluster: total returns / total orders.
+/// "Weighted" in effect (high-volume members count more) but it is a plain
+/// ratio — the name says what the math is, not what it approximates.
+fn cluster_return_rate(bs: &[&CustomerBehavior]) -> f64 {
     let orders: u32 = bs.iter().map(|b| b.order_count).sum();
     let returns: u32 = bs.iter().map(|b| b.return_count).sum();
     if orders == 0 {

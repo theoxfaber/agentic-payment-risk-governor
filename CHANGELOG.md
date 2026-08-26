@@ -5,19 +5,71 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
+### Added — learned intelligence layer (docs/AI_DESIGN.md)
+- Pure-Rust logistic regression (`eval-harness::lr`): class-weighted, L2,
+  deterministic training on CALIBRATION worlds only; ships as a versioned
+  JSON artifact (`eval-harness/artifacts/lr_model.json`). Held-out:
+  100% precision / 100% recall at 0.5 cut — the feature set carries the signal
+- Conformal Risk Control calibration (`eval-harness::conformal`): the REVIEW
+  band's thresholds are derived from two explicit policy budgets (fraud-leak
+  α=2%, friction α=1%) with finite-sample distribution-free validity instead
+  of magic numbers (Vovk 2005; Angelopoulos & Bates ICLR 2024)
+- Instance-dependent economics in `calibrated_lr_crc` (Elkan 2001; 2-D (p̂,
+  amount) threshold region): auto-allow only when p̂×exposure costs less than
+  one ₹400 human review → held-out 100% precision, 94% recall, ₹0 friction,
+  and a bounded ₹13.50 concession that is cheaper than reviewing would have
+  been. The honest cost of automation, per instance
+- PSI drift monitoring: governor-server exports a risk-score histogram and
+  Population Stability Index vs `SCORE_REFERENCE_JSON` — prediction drift is
+  the earliest concept-drift signal while labels mature (Dal Pozzolo TNNLS 2017)
+- Prompt-injection hardening for LLM intent extraction: agent-controlled text
+  sanitized (control chars, fences, case-insensitive role-injection openers,
+  length cap) and delimited as untrusted data inside `<declared_intent>` tags;
+  claims remain evidence-only downstream
+- `docs/AI_DESIGN.md`: full research grounding — why an LLM never decides,
+  why logistic regression, conformal guarantees, cost-sensitive thresholds,
+  drift monitoring, and the production label-maturation path
+
+### Fixed — audit-driven hardening pass (docs/BUGS.md §6–14)
+- **Approval TOCTOU**: concurrent reviews could double-execute a payment.
+  Claim-under-lock protocol before any await; pinned by an 8-way concurrent
+  test asserting exactly one gateway execution
+- **Dashboard credential leak**: served HTML embedded the live API key to
+  unauthenticated callers; page now carries no secret (browser-held key)
+- **Label leakage**: population baseline excluded abusers via ground truth;
+  replaced with label-free trimmed-pool estimation (honest side effect visible
+  in the eval table)
+- **Metric inflation**: randomized-world sweep dropped legitimate-world FPs
+  from pooled precision despite a comment claiming otherwise; now pooled and
+  reported explicitly
+- **Fail-open custom rules**: unknown rule conditions silently evaluated
+  false; now fail closed with a violation record
+- **Dead validation**: `validate_request` was tested but never called inside
+  the pipeline; now step zero of every entry path, with caller mistakes
+  mapped to HTTP 400 (was 500)
+- **Inert intent score**: `intent_mismatch_score` was computed end-to-end and
+  consumed by nothing; combiner now forces REVIEW on contradiction ≥0.5
+- **Zombie workers**: NATS workers exited 0 after failed subscription; binaries
+  now exit non-zero so orchestrators can see the failure
+- **Demo data in prod DBs**: demo seeding on Postgres now requires SEED_DEMO=true
+
+### Changed
+- Eval harness grows from 3 to 5 detectors (`learned_logistic`,
+  `calibrated_lr_crc` join the comparison table); suite trains once per run,
+  calibration worlds only
+
+### Added (earlier this release)
 - Robustness evaluation (`eval-harness::robustness`): degradation sweep over
   held-out worlds (missing behavioral records, timing jitter, count noise) —
-  recall holds at 100% while human-review share rises 1%→72% and legitimate
-  friction moves 0→24 flagged of ~1.5-2k; randomized-parameter sweep across
-  140 never-tuned world shapes lands 100% precision / 99.4% recall
+  recall holds at 100% while human-review share rises and legitimate friction
+  stays bounded; randomized-parameter sweep across 140 never-tuned world
+  shapes lands 100% precision / 99.4% recall with FPs from legitimate worlds
+  now pooled into precision
 - Three robustness regression gates: recall holds + uncertainty routes to
   humans under degradation; randomized-world precision/recall ≥95%;
   perturbation harness proven non-vacuous
 - README "What breaks first when the data gets messy" section with the
   degradation table and honest read of where the cost lands
-
-### Added (earlier this release)
 - `docs/TESTING.md`: per-crate test inventory (157 tests), the offline-run
   guarantee, and the explicit list of opt-in infrastructure-tagged suites
 - Fresh-clone verification: clean clone + stripped env (no credentials)

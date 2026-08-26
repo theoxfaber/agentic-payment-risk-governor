@@ -332,8 +332,16 @@ impl PropertyGraph {
         let index: HashMap<&EntityId, usize> = customers.iter().enumerate().map(|(i, c)| (&c.id, i)).collect();
 
         let mut uf = UnionFind::new(customers.len());
-        let mut shared_resources: HashMap<usize, Vec<EntityId>> = HashMap::new();
-        let mut link_kinds_seen: HashMap<usize, std::collections::BTreeSet<RelationKind>> = HashMap::new();
+
+        // Resource/link-kind evidence is recorded PER CUSTOMER and aggregated
+        // per FINAL root after all unions complete. Keying these maps by the
+        // root mid-loop was a real bug: roots die when their component merges
+        // into another, and metadata recorded under a dying root was lost —
+        // clusters formed through multi-step transitive joins could report
+        // fewer link kinds than they actually have, weakening the
+        // structurally_suspicious gate downstream.
+        let mut cust_resources: HashMap<usize, Vec<EntityId>> = HashMap::new();
+        let mut cust_link_kinds: HashMap<usize, std::collections::BTreeSet<RelationKind>> = HashMap::new();
 
         // For every resource node, join all customers pointing at it.
         for rel in RelationKind::linking_kinds() {
@@ -367,19 +375,18 @@ impl PropertyGraph {
                 if cus_users.len() < 2 {
                     continue;
                 }
+                let resource = EntityId(self.edges[ri].to.0.clone());
                 for &u in &cus_users[1..] {
                     uf.union(cus_users[0], u);
                 }
-                let root = uf.find(cus_users[0]);
-                shared_resources
-                    .entry(root)
-                    .or_default()
-                    .push(EntityId(self.edges[ri].to.0.clone()));
-                link_kinds_seen.entry(root).or_default().insert(*rel);
+                for &u in &cus_users {
+                    cust_resources.entry(u).or_default().push(resource.clone());
+                    cust_link_kinds.entry(u).or_default().insert(*rel);
+                }
             }
         }
 
-        // Group by root
+        // Group by FINAL root, aggregating evidence from every member.
         let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
         for i in 0..customers.len() {
             groups.entry(uf.find(i)).or_default().push(i);
@@ -390,19 +397,22 @@ impl PropertyGraph {
             .filter(|g| g.len() >= min_size)
             .map(|mut g| {
                 g.sort(); // by insertion index == sorted by id (we pre-sorted)
-                let root = uf.find(g[0]);
+                let mut shared: Vec<EntityId> = Vec::new();
+                let mut kinds: std::collections::BTreeSet<RelationKind> = Default::default();
+                for i in &g {
+                    if let Some(r) = cust_resources.get(i) {
+                        shared.extend(r.iter().cloned());
+                    }
+                    if let Some(k) = cust_link_kinds.get(i) {
+                        kinds.extend(k.iter().copied());
+                    }
+                }
+                shared.sort_by(|a, b| a.0.cmp(&b.0));
+                shared.dedup();
                 Cluster {
                     members: g.iter().map(|i| customers[*i].id.clone()).collect(),
-                    shared_resources: {
-                        let mut sr = shared_resources.remove(&root).unwrap_or_default();
-                        sr.sort_by(|a, b| a.0.cmp(&b.0));
-                        sr.dedup();
-                        sr
-                    },
-                    link_kinds: link_kinds_seen
-                        .remove(&root)
-                        .map(|s| s.into_iter().collect())
-                        .unwrap_or_default(),
+                    shared_resources: shared,
+                    link_kinds: kinds.into_iter().collect(),
                 }
             })
             .collect();
@@ -631,6 +641,91 @@ mod tests {
             .build();
         assert!(g.abuse_ring_clusters(3).is_empty());
         assert_eq!(g.abuse_ring_clusters(2).len(), 1);
+    }
+
+    #[test]
+    fn transitive_merge_keeps_all_link_kinds_and_resources() {
+        // REGRESSION: metadata used to be keyed by the union-find root DURING
+        // the loop. When two already-formed clusters merge through a later
+        // shared resource, the surviving root's map lost the dying root's
+        // entries — a cluster could report one link kind while actually
+        // sharing two resource types, weakening structurally_suspicious.
+        //
+        // Shape: {A,B} share a DEVICE; {C,D} share an INSTRUMENT; A↔C share
+        // an IP, merging the two groups. All three link kinds and all three
+        // resources must survive in the single resulting cluster.
+        let g = GraphBuilder::new()
+            .entity(EntityKind::Device, "DEV")
+            .entity(EntityKind::PaymentInstrument, "PIN")
+            .entity(EntityKind::IpAddress, "IP")
+            .entity(EntityKind::Customer, "A")
+            .entity(EntityKind::Customer, "B")
+            .entity(EntityKind::Customer, "C")
+            .entity(EntityKind::Customer, "D")
+            .relate(
+                EntityKind::Customer,
+                "A",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "DEV",
+            )
+            .relate(
+                EntityKind::Customer,
+                "B",
+                RelationKind::UsesDevice,
+                EntityKind::Device,
+                "DEV",
+            )
+            .relate(
+                EntityKind::Customer,
+                "C",
+                RelationKind::UsesInstrument,
+                EntityKind::PaymentInstrument,
+                "PIN",
+            )
+            .relate(
+                EntityKind::Customer,
+                "D",
+                RelationKind::UsesInstrument,
+                EntityKind::PaymentInstrument,
+                "PIN",
+            )
+            .relate(
+                EntityKind::Customer,
+                "A",
+                RelationKind::FromIp,
+                EntityKind::IpAddress,
+                "IP",
+            )
+            .relate(
+                EntityKind::Customer,
+                "C",
+                RelationKind::FromIp,
+                EntityKind::IpAddress,
+                "IP",
+            )
+            .build();
+
+        let clusters = g.abuse_ring_clusters(2);
+        assert_eq!(clusters.len(), 1, "all four customers form one cluster");
+        let c = &clusters[0];
+        assert_eq!(c.members.len(), 4);
+
+        let kinds: Vec<_> = c.link_kinds.to_vec();
+        assert!(
+            kinds.contains(&RelationKind::UsesDevice)
+                && kinds.contains(&RelationKind::UsesInstrument)
+                && kinds.contains(&RelationKind::FromIp),
+            "all 3 link kinds must survive the transitive merge, got {kinds:?}"
+        );
+        let res: Vec<&str> = c.shared_resources.iter().map(|r| r.0.as_str()).collect();
+        // EntityIds render as "kind:external"
+        for expected in ["dev:DEV", "pin:PIN", "ip:IP"] {
+            assert!(
+                res.contains(&expected),
+                "resource {expected} missing from {res:?} — metadata was lost at merge"
+            );
+        }
     }
 
     #[test]

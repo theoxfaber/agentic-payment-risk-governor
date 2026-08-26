@@ -77,11 +77,21 @@ impl PolicyEngine {
 
         // Check custom rules
         for rule in &policy.custom_rules {
-            if self.evaluate_custom_rule(rule, request, evidence) {
-                matched_rules.push(rule.rule_id.clone());
-                if rule.action == PolicyVerdict::Block {
-                    violated_thresholds.push(format!("custom rule {} triggered block", rule.rule_id));
+            match self.evaluate_custom_rule(rule, request, evidence) {
+                CustomRuleOutcome::Triggered => {
+                    matched_rules.push(rule.rule_id.clone());
+                    if rule.action == PolicyVerdict::Block {
+                        violated_thresholds.push(format!("custom rule {} triggered block", rule.rule_id));
+                    }
                 }
+                CustomRuleOutcome::NotTriggered => {}
+                // A condition string we don't recognize is a MISCONFIGURATION,
+                // not a pass. Silently evaluating to false fails OPEN — the
+                // opposite of what a blocking rule exists for.
+                CustomRuleOutcome::UnknownCondition(c) => violated_thresholds.push(format!(
+                    "custom rule {} has unknown condition '{}' (fail-closed)",
+                    rule.rule_id, c
+                )),
             }
         }
 
@@ -104,20 +114,60 @@ impl PolicyEngine {
         })
     }
 
-    fn evaluate_custom_rule(&self, rule: &CustomRule, request: &AgentActionRequest, evidence: &Evidence) -> bool {
-        // Simple condition evaluation - in production, use a proper expression engine
-        // For now, support basic conditions
+    fn evaluate_custom_rule(
+        &self,
+        rule: &CustomRule,
+        request: &AgentActionRequest,
+        evidence: &Evidence,
+    ) -> CustomRuleOutcome {
+        // Simple condition evaluation - in production, use a proper expression engine.
+        // Unknown conditions are a misconfiguration → fail CLOSED (UnknownCondition),
+        // never silently false.
         match rule.condition.as_str() {
-            "amount_gt_avg_3x" => request.amount as f64 > evidence.agent_history.avg_amount as f64 * 3.0,
-            "refund_rate_gt_10pct" => evidence.agent_history.refund_rate > 0.1,
+            "amount_gt_avg_3x" => {
+                if request.amount as f64 > evidence.agent_history.avg_amount as f64 * 3.0 {
+                    CustomRuleOutcome::Triggered
+                } else {
+                    CustomRuleOutcome::NotTriggered
+                }
+            }
+            "refund_rate_gt_10pct" => {
+                if evidence.agent_history.refund_rate > 0.1 {
+                    CustomRuleOutcome::Triggered
+                } else {
+                    CustomRuleOutcome::NotTriggered
+                }
+            }
             "new_agent_lt_7d" => {
                 let days_since_first = (now_utc() - evidence.agent_history.first_seen).num_days();
-                days_since_first < 7
+                if days_since_first < 7 {
+                    CustomRuleOutcome::Triggered
+                } else {
+                    CustomRuleOutcome::NotTriggered
+                }
             }
-            "high_velocity" => evidence.recent_velocity.actions_last_hour > 10,
-            _ => false,
+            "high_velocity" => {
+                if evidence.recent_velocity.actions_last_hour > 10 {
+                    CustomRuleOutcome::Triggered
+                } else {
+                    CustomRuleOutcome::NotTriggered
+                }
+            }
+            unknown => CustomRuleOutcome::UnknownCondition(unknown.to_string()),
         }
     }
+}
+
+/// Tri-state result of evaluating one custom rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CustomRuleOutcome {
+    /// Condition evaluated true — the rule fired.
+    Triggered,
+    /// Condition evaluated false — normal path.
+    NotTriggered,
+    /// The condition string is not recognized: a policy misconfiguration.
+    /// The caller must treat this as a violation (fail closed).
+    UnknownCondition(String),
 }
 
 impl Default for PolicyEngine {
@@ -305,6 +355,25 @@ mod tests {
             .await
             .unwrap();
         assert!(r.matched_rules.contains(&"big_spend".to_string()));
+    }
+
+    #[tokio::test]
+    async fn unknown_custom_rule_condition_fails_closed() {
+        // A typo'd condition string must BLOCK, never silently pass —
+        // fail-open here would defeat the rule's entire purpose.
+        let mut p = policy();
+        p.custom_rules = vec![CustomRule {
+            rule_id: "misconfigured".into(),
+            condition: "amount_gt_averge_3x".into(), // typo
+            action: PolicyVerdict::Block,
+            description: "typo'd condition".into(),
+        }];
+        let r = engine()
+            .evaluate(&request(ActionType::Refund, 1_000), &evidence(p))
+            .await
+            .unwrap();
+        assert_eq!(r.verdict, PolicyVerdict::Block);
+        assert!(r.violated_thresholds[0].contains("fail-closed"));
     }
 
     #[tokio::test]

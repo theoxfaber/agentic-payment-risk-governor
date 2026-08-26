@@ -1,4 +1,4 @@
-//! Eval harness: runs all worlds through three detectors and produces the
+//! Eval harness: runs all worlds through five detectors and produces the
 //! honest comparison table (precision / recall / FP-cost / FN-cost /
 //! prevented value).
 //!
@@ -11,13 +11,30 @@
 //!   3. `investigation_engine` — clusters + hypothesis testing with
 //!      counter-evidence. Supported → auto-block; Conflicted → human review;
 //!      Unsupported → clear.
+//!   4. `learned_logistic` — pure-Rust logistic regression trained ONLY on
+//!      calibration worlds (see lr.rs / learned.rs / docs/AI_DESIGN.md).
+//!   5. `calibrated_lr_crc` — same model, thresholds chosen by Conformal Risk
+//!      Control so fraud-leak and friction budgets hold with finite-sample
+//!      validity; the in-between band routes to human review.
 
 use dataset_gen::{baseline_of, World};
 use investigation_engine::Investigator;
 use serde::Serialize;
 use std::collections::HashMap;
 
+pub mod conformal;
+pub mod learned;
+pub mod lr;
 pub mod robustness;
+pub mod stress;
+
+/// Train the learned layer on CALIBRATION worlds only. One instance is
+/// shared by every split evaluation; held-out data never touches it.
+pub fn learned_suite() -> learned::LearnedSuite {
+    let specs = world_specs(dataset_gen::WorldKind::Normal, CALIBRATION_SEED);
+    let calibration_worlds: Vec<World> = specs.into_iter().map(dataset_gen::generate_world).collect();
+    learned::LearnedSuite::train_on_calibration(&calibration_worlds)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -259,6 +276,8 @@ pub const DETECTORS: &[&str] = &[
     "per_customer_rate_rule",
     "structural_cluster_only",
     "investigation_engine",
+    "learned_logistic",
+    "calibrated_lr_crc",
 ];
 
 /// The seed every threshold in the investigation engine was tuned against.
@@ -269,28 +288,45 @@ pub const CALIBRATION_SEED: u64 = 2026;
 /// tuned against proves nothing (Track-02 bar: held-out test set).
 pub const HELDOUT_SEEDS: &[u64] = &[31_415, 27_182, 16_180];
 
-fn run_world_set(seed: u64, split: &'static str) -> Vec<WorldMetrics> {
+/// The eight world specs for one seed (all kinds).
+fn world_specs(_kind: dataset_gen::WorldKind, seed: u64) -> Vec<dataset_gen::WorldSpec> {
     use dataset_gen::WorldKind;
-    let specs = [
-        WorldSpecShorthand::new(WorldKind::Normal, 300, 0, 3, seed),
-        WorldSpecShorthand::new(WorldKind::Household, 300, 8, 3, seed),
+    [
+        (WorldKind::Normal, (300, 0, 3)),
+        (WorldKind::Household, (300, 8, 3)),
         // Coincidental sharing: NAT IPs, popular devices, reused addresses.
         // All legit — measures honest precision under real-world overlap.
-        WorldSpecShorthand::new(WorldKind::CoincidentalSharing, 300, 8, 3, seed),
-        WorldSpecShorthand::new(WorldKind::ReturnAbuse, 300, 6, 3, seed),
-        WorldSpecShorthand::new(WorldKind::RefundAbuse, 300, 6, 3, seed),
-        WorldSpecShorthand::new(WorldKind::DistributedRing, 300, 6, 3, seed),
-        WorldSpecShorthand::new(WorldKind::MerchantCollusion, 300, 6, 3, seed),
-        WorldSpecShorthand::new(WorldKind::AdversarialEvasion, 300, 6, 3, seed),
-    ];
+        (WorldKind::CoincidentalSharing, (300, 8, 3)),
+        (WorldKind::ReturnAbuse, (300, 6, 3)),
+        (WorldKind::RefundAbuse, (300, 6, 3)),
+        (WorldKind::DistributedRing, (300, 6, 3)),
+        (WorldKind::MerchantCollusion, (300, 6, 3)),
+        (WorldKind::AdversarialEvasion, (300, 6, 3)),
+    ]
+    .into_iter()
+    .map(|(kind, (bg, rings, size))| dataset_gen::WorldSpec {
+        kind,
+        n_background: bg,
+        n_rings: rings,
+        ring_size: size,
+        seed,
+    })
+    .collect()
+}
+
+fn run_world_set(seed: u64, split: &'static str, suite: &learned::LearnedSuite) -> Vec<WorldMetrics> {
+    let mut learned_det = suite.learned_detector();
+    let mut calibrated_det = suite.calibrated_detector();
 
     let mut results = Vec::new();
-    for s in specs {
-        let world = dataset_gen::generate_world(s.spec);
+    for spec in world_specs(dataset_gen::WorldKind::Normal, seed) {
+        let world = dataset_gen::generate_world(spec);
         for det in [
             &mut PerCustomerRateRule as &mut dyn Detector,
             &mut StructuralClusterOnly::default() as &mut dyn Detector,
             &mut InvestigationEngineDetector as &mut dyn Detector,
+            &mut learned_det as &mut dyn Detector,
+            &mut calibrated_det as &mut dyn Detector,
         ] {
             results.push(evaluate_split(&world, det, split, seed));
         }
@@ -300,41 +336,26 @@ fn run_world_set(seed: u64, split: &'static str) -> Vec<WorldMetrics> {
 
 /// Calibration worlds: what the thresholds were developed against. Shown for
 /// transparency; NOT the headline numbers.
-pub fn run_calibration() -> Vec<WorldMetrics> {
-    run_world_set(CALIBRATION_SEED, "calibration")
+pub fn run_calibration(suite: &learned::LearnedSuite) -> Vec<WorldMetrics> {
+    run_world_set(CALIBRATION_SEED, "calibration", suite)
 }
 
-/// Held-out worlds: three fresh seeds per world kind. THE headline numbers.
-pub fn run_held_out() -> Vec<WorldMetrics> {
-    HELDOUT_SEEDS
+/// Held-out worlds: one fresh seed set per evaluation. THE headline numbers.
+/// Pass seeds you did not tune against — CI and `run_all` use the committed
+/// defaults; judges can supply their own via EVAL_HELDOUT_SEEDS.
+pub fn run_held_out(suite: &learned::LearnedSuite, seeds: &[u64]) -> Vec<WorldMetrics> {
+    seeds
         .iter()
-        .flat_map(|s| run_world_set(*s, "held-out"))
+        .flat_map(|s| run_world_set(*s, "held-out", suite))
         .collect()
 }
 
-/// The full sweep: calibration + held-out.
+/// The full sweep: calibration + committed held-out seeds.
 pub fn run_all() -> Vec<WorldMetrics> {
-    let mut results = run_calibration();
-    results.extend(run_held_out());
+    let suite = learned_suite();
+    let mut results = run_calibration(&suite);
+    results.extend(run_held_out(&suite, HELDOUT_SEEDS));
     results
-}
-
-struct WorldSpecShorthand {
-    spec: dataset_gen::WorldSpec,
-}
-
-impl WorldSpecShorthand {
-    fn new(kind: dataset_gen::WorldKind, bg: usize, rings: usize, size: usize, seed: u64) -> Self {
-        Self {
-            spec: dataset_gen::WorldSpec {
-                kind,
-                n_background: bg,
-                n_rings: rings,
-                ring_size: size,
-                seed,
-            },
-        }
-    }
 }
 
 /// Markdown table for the README — one row per (world, detector).

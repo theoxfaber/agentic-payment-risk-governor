@@ -91,7 +91,21 @@ async fn main() -> anyhow::Result<()> {
         Some(s) => EvidenceBackend::Pg(s.clone()),
         None => EvidenceBackend::Mem(Arc::new(evidence_service::InMemoryEvidenceStore::new())),
     };
-    seed_demo_entities(&evidence_backend).await?;
+    // Demo seeding policy:
+    //   - in-memory backend → seeded (local dev / demo ergonomics)
+    //   - Postgres backend  → ONLY when SEED_DEMO=true|1. A production DB
+    //     must not silently inherit demo agents and a default merchant
+    //     policy with hardcoded limits.
+    let seed_demo = match (&pg, std::env::var("SEED_DEMO").as_deref()) {
+        (None, _) => true,
+        (Some(_), Ok(v)) => matches!(v.trim(), "true" | "1"),
+        (Some(_), Err(_)) => false,
+    };
+    if seed_demo {
+        seed_demo_entities(&evidence_backend).await?;
+    } else {
+        tracing::info!("demo entity seeding skipped (Postgres backend, SEED_DEMO not set)");
+    }
 
     // Optional extra reference entities from a seed file (same shape as the
     // evidence-worker's EVIDENCE_SEED) — only meaningful on the PG backend.

@@ -144,6 +144,12 @@ where
     }
 
     async fn process_inner(&self, request: AgentActionRequest) -> Result<Decision, ActionServiceError> {
+        // Validate BEFORE anything else — every entry path (HTTP, NATS
+        // workers, demos, tests) gets the same business-field guarantees:
+        // positive amount, non-empty identity/intent. Skipping this let a
+        // negative amount flow through the whole pipeline.
+        validate_request(&request)?;
+
         // The decision ID exists from the moment the request arrives — every
         // audit record for this action (including pre-decision evaluations)
         // carries it, so replay reconstructs the FULL trail.
@@ -287,6 +293,15 @@ where
         //   5. Otherwise → Allow
 
         let mut extra_rules: Vec<String> = Vec::new();
+        // Declared intent vs hard fields: a high mismatch score means the
+        // agent's stated reason contradicts what it is asking for (missing
+        // action keyword, urgency pressure, claimed amount ≠ requested
+        // amount). That is deception evidence — it can never BLOCK on its
+        // own (too gameable), but it must never sail through as a silent
+        // ALLOW either.
+        if risk_result.intent_mismatch_score >= 0.5 {
+            extra_rules.push("intent_contradiction".into());
+        }
         if let Some(inv) = investigation {
             // Unsupported = hypothesis not established → no added friction,
             // EXCEPT the adversarial-evasion case: strong structural linkage
@@ -455,23 +470,48 @@ mod tests {
 
     struct FixedRisk(f64);
 
+    /// Fixed risk + fixed intent-mismatch (for combiner interaction tests).
+    struct FixedIntent {
+        score: f64,
+        mismatch: f64,
+    }
+
+    #[async_trait::async_trait]
+    impl RiskEngine for FixedIntent {
+        async fn score(&self, _: &AgentActionRequest, _: &Evidence) -> Result<RiskResult, ActionServiceError> {
+            Ok(RiskResult {
+                risk_score: self.score,
+                intent_mismatch_score: self.mismatch,
+                features: FixedRisk(0.0).dummy_features(),
+                model_version: "fixed-intent-test".into(),
+                evaluated_at: now_utc(),
+            })
+        }
+    }
+
+    impl FixedRisk {
+        fn dummy_features(&self) -> RiskFeatures {
+            RiskFeatures {
+                amount_zscore: 0.0,
+                velocity_zscore: 0.0,
+                intent_mismatch_score: 0.0,
+                behavioral_drift_score: 0.0,
+                merchant_risk_score: 0.0,
+                agent_risk_score: 0.0,
+                customer_risk_score: 0.0,
+                time_since_last_action_hours: 0.0,
+                amount_vs_avg_ratio: 1.0,
+            }
+        }
+    }
+
     #[async_trait::async_trait]
     impl RiskEngine for FixedRisk {
         async fn score(&self, _: &AgentActionRequest, _: &Evidence) -> Result<RiskResult, ActionServiceError> {
             Ok(RiskResult {
                 risk_score: self.0,
                 intent_mismatch_score: 0.0,
-                features: RiskFeatures {
-                    amount_zscore: 0.0,
-                    velocity_zscore: 0.0,
-                    intent_mismatch_score: 0.0,
-                    behavioral_drift_score: 0.0,
-                    merchant_risk_score: 0.0,
-                    agent_risk_score: 0.0,
-                    customer_risk_score: 0.0,
-                    time_since_last_action_hours: 0.0,
-                    amount_vs_avg_ratio: 1.0,
-                },
+                features: self.dummy_features(),
                 model_version: "fixed-test".into(),
                 evaluated_at: now_utc(),
             })
@@ -579,6 +619,46 @@ mod tests {
         let svc = service_with_risk(0.9);
         let d = svc.process_action(valid_request()).await.unwrap();
         assert_eq!(d.decision, DecisionOutcome::Block);
+    }
+
+    #[tokio::test]
+    async fn intent_contradiction_forces_review_even_at_low_risk() {
+        // The lying-agent signal: risk score is tiny, but the declared intent
+        // contradicts the hard fields. Must surface as Review with an audit
+        // marker — never a silent ALLOW, and never an auto-BLOCK either.
+        let svc: ActionService<AllowAll, FixedIntent, EvidenceOk, AuditOk, GatewayOk> = ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedIntent {
+                score: 0.01,
+                mismatch: 0.6,
+            }),
+            Arc::new(EvidenceOk),
+            Arc::new(AuditOk),
+            Arc::new(GatewayOk),
+        );
+        let d = svc.process_action(valid_request()).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Review);
+        assert!(d
+            .policy_result
+            .matched_rules
+            .iter()
+            .any(|r| r == "intent_contradiction"));
+    }
+
+    #[tokio::test]
+    async fn mild_intent_mismatch_does_not_add_friction() {
+        let svc: ActionService<AllowAll, FixedIntent, EvidenceOk, AuditOk, GatewayOk> = ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedIntent {
+                score: 0.01,
+                mismatch: 0.3,
+            }),
+            Arc::new(EvidenceOk),
+            Arc::new(AuditOk),
+            Arc::new(GatewayOk),
+        );
+        let d = svc.process_action(valid_request()).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Allow);
     }
 
     #[tokio::test]

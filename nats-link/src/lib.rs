@@ -109,24 +109,27 @@ impl action_service::PolicyEngine for NatsPolicyEngine {
 // Worker side (its own process)
 // ---------------------------------------------------------------------------
 
-/// Subscribes forever. Spawn via `tokio::spawn`; kill by aborting the handle.
-/// The engine is stateless — constructed per message at zero cost.
-pub fn spawn_policy_worker(client: Client) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut sub = match client.subscribe(SUBJECT_POLICY_EVAL).await {
-            Ok(s) => s,
-            Err(e) => {
-                error!("policy worker could not subscribe: {e}");
-                return;
-            }
-        };
-        info!(subject = SUBJECT_POLICY_EVAL, "policy-engine-worker listening");
+/// Subscribe + serve loop for the policy worker. Returns Err if the
+/// subscription cannot be established, so a worker binary can exit NON-ZERO
+/// instead of sitting idle looking healthy.
+pub async fn run_policy_worker(client: Client) -> anyhow::Result<()> {
+    let mut sub = client
+        .subscribe(SUBJECT_POLICY_EVAL)
+        .await
+        .map_err(|e| anyhow::anyhow!("policy worker subscribe failed: {e}"))?;
+    info!(subject = SUBJECT_POLICY_EVAL, "policy-engine-worker listening");
 
-        while let Some(msg) = sub.next().await {
-            let client = client.clone();
-            tokio::spawn(async move { handle_one(client, msg).await });
-        }
-    })
+    while let Some(msg) = sub.next().await {
+        let client = client.clone();
+        tokio::spawn(async move { handle_one(client, msg).await });
+    }
+    Ok(())
+}
+
+/// Spawned variant for tests/demos — kill by aborting the handle. The
+/// JoinHandle carries the startup result so callers can detect failure.
+pub fn spawn_policy_worker(client: Client) -> JoinHandle<anyhow::Result<()>> {
+    tokio::spawn(run_policy_worker(client))
 }
 
 async fn handle_one(client: Client, msg: async_nats::Message) {
@@ -290,48 +293,50 @@ impl action_service::EvidenceService for NatsEvidenceService {
     }
 }
 
-/// Evidence worker: serves gather (request/reply) + record_action
-/// (fire-and-forget) against the provided store.
+/// Subscribe + serve loop for the evidence worker. Returns Err if either
+/// subscription fails — the binary exits non-zero so an orchestrator can
+/// see (and restart) it, instead of a silent zombie.
+pub async fn run_evidence_worker<S: evidence_service::EvidenceStore + 'static>(
+    client: Client,
+    store: Arc<S>,
+) -> anyhow::Result<()> {
+    let mut gather_sub = client
+        .subscribe(SUBJECT_EVIDENCE_GATHER)
+        .await
+        .map_err(|e| anyhow::anyhow!("evidence worker subscribe failed (gather): {e}"))?;
+    let mut record_sub = client
+        .subscribe(SUBJECT_EVIDENCE_RECORD)
+        .await
+        .map_err(|e| anyhow::anyhow!("evidence worker subscribe failed (record): {e}"))?;
+    info!(
+        gather = SUBJECT_EVIDENCE_GATHER,
+        record = SUBJECT_EVIDENCE_RECORD,
+        "evidence-worker listening"
+    );
+
+    loop {
+        tokio::select! {
+            Some(msg) = gather_sub.next() => {
+                let client = client.clone();
+                let store = store.clone();
+                tokio::spawn(async move { handle_gather(client, store, msg).await });
+            }
+            Some(msg) = record_sub.next() => {
+                let store = store.clone();
+                tokio::spawn(async move { handle_record(store, msg).await });
+            }
+            else => break,
+        }
+    }
+    Ok(())
+}
+
+/// Spawned variant for tests/demos — kill by aborting the handle.
 pub fn spawn_evidence_worker<S: evidence_service::EvidenceStore + 'static>(
     client: Client,
     store: Arc<S>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut gather_sub = match client.subscribe(SUBJECT_EVIDENCE_GATHER).await {
-            Ok(s) => s,
-            Err(e) => {
-                error!("evidence worker could not subscribe (gather): {e}");
-                return;
-            }
-        };
-        let mut record_sub = match client.subscribe(SUBJECT_EVIDENCE_RECORD).await {
-            Ok(s) => s,
-            Err(e) => {
-                error!("evidence worker could not subscribe (record): {e}");
-                return;
-            }
-        };
-        info!(
-            gather = SUBJECT_EVIDENCE_GATHER,
-            record = SUBJECT_EVIDENCE_RECORD,
-            "evidence-worker listening"
-        );
-
-        loop {
-            tokio::select! {
-                Some(msg) = gather_sub.next() => {
-                    let client = client.clone();
-                    let store = store.clone();
-                    tokio::spawn(async move { handle_gather(client, store, msg).await });
-                }
-                Some(msg) = record_sub.next() => {
-                    let store = store.clone();
-                    tokio::spawn(async move { handle_record(store, msg).await });
-                }
-                else => break,
-            }
-        }
-    })
+) -> JoinHandle<anyhow::Result<()>> {
+    tokio::spawn(run_evidence_worker(client, store))
 }
 
 async fn handle_gather<S: evidence_service::EvidenceStore + 'static>(

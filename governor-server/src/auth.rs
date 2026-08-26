@@ -14,14 +14,21 @@ use crate::state::AppState;
 /// Prometheus scrape), and the dashboard page carries the server's own key so
 /// it authenticates like any other client.
 pub(crate) fn resolve_api_key() -> String {
-    match std::env::var("GOVERNOR_API_KEY") {
-        Ok(k) if !k.trim().is_empty() => k,
-        _ => {
-            let ephemeral = format!("rgov_{}", Uuid::new_v4());
-            tracing::warn!("GOVERNOR_API_KEY not set — generated EPHEMERAL key for this run: {ephemeral}");
-            tracing::warn!("set GOVERNOR_API_KEY to pin a stable key across restarts");
-            ephemeral
-        }
+    let from_env = std::env::var("GOVERNOR_API_KEY").ok().filter(|k| !k.trim().is_empty());
+    let key = api_key_from(from_env.clone());
+    if from_env.is_none() {
+        tracing::warn!("GOVERNOR_API_KEY not set — generated EPHEMERAL key for this run: {key}");
+        tracing::warn!("set GOVERNOR_API_KEY to pin a stable key across restarts");
+    }
+    key
+}
+
+/// Pure decision logic — testable without touching process-global env state
+/// (env mutation is unsound under Rust's multithreaded test runners).
+fn api_key_from(env_value: Option<String>) -> String {
+    match env_value {
+        Some(k) if !k.trim().is_empty() => k,
+        _ => format!("rgov_{}", Uuid::new_v4()),
     }
 }
 
@@ -77,13 +84,18 @@ mod tests {
 
     #[test]
     fn env_key_wins_and_ephemeral_is_prefixed() {
-        // resolve_api_key reads the process env; only assert the fallback shape
-        // here to avoid mutating global env in parallel tests.
-        std::env::remove_var("GOVERNOR_API_KEY");
-        let k = resolve_api_key();
-        assert!(k.starts_with("rgov_"), "ephemeral keys must be prefixed: {k}");
-        std::env::set_var("GOVERNOR_API_KEY", "fixed-test-key");
-        assert_eq!(resolve_api_key(), "fixed-test-key");
-        std::env::remove_var("GOVERNOR_API_KEY");
+        // Pure-function path: no process-global env mutation (unsound under
+        // multithreaded test runners).
+        assert_eq!(api_key_from(Some("pinned-key".into())), "pinned-key");
+        assert!(
+            api_key_from(Some("   ".into())).starts_with("rgov_"),
+            "blank key must fall back to ephemeral"
+        );
+        assert!(api_key_from(None).starts_with("rgov_"));
+        assert_ne!(
+            api_key_from(None),
+            api_key_from(None),
+            "ephemeral keys must be unique per call"
+        );
     }
 }

@@ -5,8 +5,8 @@
 ### A safety and governance layer for autonomous financial agents
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/Rust-21--crate%20workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-157%20passing-1a7f37)
+![Rust](https://img.shields.io/badge/Rust-22--crate%20workspace-dea584?logo=rust)
+![Tests](https://img.shields.io/badge/tests-185%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-reserved-blue)
 
 **AI agents can now execute refunds, payouts, and orders on payment platforms
@@ -120,16 +120,27 @@ detector never saw**.
 
 | Approach | Precision | Recall | FP cost | FN cost | Prevented |
 |---|---:|---:|---:|---:|---:|
-| Rules only (per-customer rate) | 100% | 66% | ₹0 | ₹36,000 | ₹1,66,950 |
+| Rules only (per-customer rate) | 100% | 66% | ₹0 | ₹34,650 | ₹1,68,300 |
 | Structural clustering only | 51% | 100% | ₹65,925 | ₹0 | ₹2,02,950 |
 | **Investigation engine (hybrid)** | **100%** | **100%** | **₹0** | **₹0** | **₹2,02,950** |
+| Learned logistic regression | 100% | 100% | ₹0 | ₹0 | ₹2,02,950 |
+| LR + conformal economics (`calibrated_lr_crc`) | 100% | 94% | ₹0 | ₹1,350 | ₹2,01,600 |
+
+The last two rows are a pure-Rust logistic regression trained **only on
+calibration worlds** — held-out numbers. The calibrated variant concedes
+₹1,350 of prevented value *on purpose*: it auto-allows only when being wrong
+costs less than one ₹400 human review (`p̂ × exposure ≤ review_cost`), and its
+auto-block threshold comes from [Conformal Risk Control](docs/AI_DESIGN.md)
+with declared budgets — fraud-leak ≤ 2%, friction ≤ 1%, finite-sample valid.
+Spending human time to prevent ₹13.50 is bad economics, and the system can
+say so with a number instead of a vibe.
 
 False-positive check across **all** held-out household + coincidental-sharing
 seeds — 972 legitimate customers sharing devices, addresses, NAT IPs:
 
 - rules-only misses most abuse outright
 - clustering-only flags innocents (₹16,988 friction cost)
-- **investigation engine flags 0 of 972 (₹0 friction cost)**
+- investigation engine, learned LR, and the CRC-calibrated detector each flag **0 of 972**
 
 Regression tests enforce these properties on every held-out seed — recall ≥90%
 under adversarial evasion and zero false positives are CI gates, not claims.
@@ -164,26 +175,46 @@ And because "100% on your own templates" proves little, the sweep also draws
 never tuned against):
 
 > investigation engine across 140 randomly-drawn worlds:
-> **precision 100%, recall 99.4%**
+> **precision 100%, recall 99.4%** — legitimate-world false positives pooled
+> into the headline, 0 flagged
 
 Not perfect — one ring in a few hundred slips through when random draws
 produce near-evasion shapes. That gap is a more credible number than another
 clean 100%.
+
+**CRC guarantee validation — clean tables don't exercise the bound.** Calibrating
+on clean, separable worlds leaves the conformal budgets unconsumed. `stress.rs`
+camouflages abusers toward the legitimate manifold and re-calibrates per run;
+over 12 fresh runs the pooled leak and friction sit *on* their budgets
+(≈2% and ≈1%, z < 1 within binomial noise) while review share inflates ~2→36%
+and PSI fires at ~1.0 — the designed conservative response. Details, including
+the mixture-mismatch that first violated the bound (87% leak when cohort and
+deployment mixtures differed), in [docs/AI_DESIGN.md §2.6](docs/AI_DESIGN.md).
+
+The full methodology — why logistic regression, why an LLM never decides,
+how the conformal budgets work, and the production label-maturation path —
+is in [docs/AI_DESIGN.md](docs/AI_DESIGN.md).
 
 ## What's real vs simulated
 
 Said plainly, because credibility matters more than impressions:
 
 - ✅ **Real:** the decision pipeline, entity graph, evidence-based reasoning,
-  AI-assisted intent extraction (LLM-backed when configured — claims are
-  evidence only, never the decision-maker), audit/replay, NATS distribution,
-  chaos tests, API-key auth with constant-time comparison, idempotent gateway
-  execution with a refund lost-response guard, and live Razorpay test-mode API calls
+  a **learned scoring layer** (pure-Rust logistic regression trained on
+  calibration worlds only, thresholds calibrated by Conformal Risk Control
+  with declared fraud-leak/friction budgets — see docs/AI_DESIGN.md),
+  AI-assisted intent extraction (LLM-backed when configured, prompt-injection
+  hardened — claims are evidence only, never the decision-maker), audit/replay,
+  NATS distribution, chaos tests, API-key auth with constant-time comparison,
+  idempotent gateway execution with a refund lost-response guard,
+  PSI drift monitoring, and live Razorpay test-mode API calls
 - ⚠️ **Simulated:** the dataset is synthetic and labeled by construction.
   Held-out metrics, randomized-parameter sweeps, and degradation tests prove
   the reasoning generalizes across unseen world draws and messy data — not
-  production performance. No claim of access to Razorpay's production risk
-  systems or internal models
+  production performance. The learned layer's training/calibration data is
+  synthetic; wiring it to matured production labels (via Razorpay webhooks)
+  is the stated next milestone. No claim of access to Razorpay's production
+  risk systems or internal models
 - 🚫 **Not claimed:** access to Razorpay production systems or internal models;
   this layer composes with platform-side fraud models, never replaces them
 
@@ -231,8 +262,12 @@ Single-thesis Rust workspace — each crate is one clean module of one pipeline:
 | [`mcp-server`](mcp-server) | MCP tools so any AI agent routes through governance |
 | `nats-link` | Distributed mode: pipeline split across processes via NATS |
 | `dashboard` | Live decision stream, replay viewer, human-approval UI — vanilla JS, zero build step |
-| `dataset-gen` / `eval-harness` | Labeled adversarial worlds + calibration/held-out evaluation |
+| `dataset-gen` / `eval-harness` | Labeled adversarial worlds + calibration/held-out evaluation; learned layer (`lr`, `conformal`, `learned`) trained on calibration worlds only |
 | `webhook-consumer`, `evaluation-service`, `infra-probe` | Supporting services |
+
+Design docs: [docs/AI_DESIGN.md](docs/AI_DESIGN.md) (intelligence-layer
+architecture and references) · [docs/BUGS.md](docs/BUGS.md) (every real bug
+hit, how it was caught, how it's pinned) · [docs/TESTING.md](docs/TESTING.md).
 
 ## Run the pieces yourself
 
@@ -285,8 +320,11 @@ intent and moves no money.
 <summary><b>Tests & evaluation</b></summary>
 
 ```bash
-cargo test --workspace              # 157 tests — offline, self-contained (see docs/TESTING.md)
-cargo run --release -p eval-harness # calibration + held-out tables
+cargo test --workspace              # 185 tests — offline, self-contained (see docs/TESTING.md)
+cargo run --release -p eval-harness # calibration + held-out tables + CRC guarantee validation
+
+# Judge-regenerable headline: your own held-out seeds, never seen by this repo
+EVAL_HELDOUT_SEEDS=12345,67890 cargo run --release -p eval-harness
 
 # Distributed demo (NATS + Postgres):
 docker compose up -d
@@ -305,14 +343,18 @@ cargo-audit dependency scan · enforced line coverage.
 <details>
 <summary><b>Configuration reference</b></summary>
 
+## Configuration reference
+
 | Variable | Purpose |
 |---|---|
 | `GOVERNOR_API_KEY` | API key required on all `/v1/*` routes (ephemeral key generated if unset) |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Live test-mode gateway (mock if unset) |
 | `DATABASE_URL` | Postgres persistence (in-memory if unset) |
 | `NATS_URL` | Distributed mode bus |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | LLM-backed intent extraction (heuristic if unset) |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | LLM-backed intent extraction (heuristic if unset; prompt-injection hardened) |
 | `WEBHOOK_SECRET` | Webhook HMAC-SHA256 verification |
+| `SEED_DEMO` | With Postgres: opt-in (`true`/`1`) demo entity seeding — never implicit in production DBs |
+| `SCORE_REFERENCE_JSON` | 5-bucket risk-score reference distribution → exports PSI drift metric at `/metrics` |
 
 See [.env.example](.env.example).
 
@@ -320,7 +362,9 @@ See [.env.example](.env.example).
 
 ## Roadmap
 
-- [ ] Server-side idempotency keys on the refund probe (current lost-response guard has a check-then-send race window)
+- [ ] Label maturation loop: Razorpay dispute/refund webhooks → `OutcomeRecorded` training table → nightly retrain of the learned layer, gated by PSI + held-out metrics (docs/AI_DESIGN.md §4)
+- [ ] Server-side idempotency keys on the refund probe (Razorpay's native `X-Refund-Idempotency` header; current lost-response guard has a check-then-send race window)
 - [ ] Single-packet race testing for velocity controls
-- [ ] Broader detection classes at the gateway boundary: OAuth flows, deserialization, request smuggling
+- [ ] Dispute Responder: two-phase `draft → submit` contest flow against `/v1/disputes/:id/contest` behind the same human-approval gate
+- [ ] Segment-level conformal recalibration (new-account vs established cohorts) for conditional guarantee coverage
 - [ ] Payout-specific investigation hypotheses alongside return-abuse rings

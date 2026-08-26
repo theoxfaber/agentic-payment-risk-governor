@@ -72,6 +72,8 @@ struct MockRzp {
     /// First POST fails with this behavior instead of succeeding.
     first_post: Arc<FirstPost>,
     recorded: Arc<AtomicBool>,
+    /// Last POST body captured (receipt assertion).
+    last_body: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -85,12 +87,19 @@ enum FirstPost {
 }
 
 async fn spawn_mock_rzp(first_post: FirstPost) -> (String, MockRzp) {
+    spawn_mock_rzp_with_list(first_post, None).await
+}
+
+/// `list_items` overrides what GET /refunds reports (defaults to mirroring
+/// the mock's internal recorded state).
+async fn spawn_mock_rzp_with_list(first_post: FirstPost, list_items: Option<serde_json::Value>) -> (String, MockRzp) {
     use axum::response::IntoResponse;
 
     let state = MockRzp {
         refund_posts: Arc::new(AtomicUsize::new(0)),
         first_post: Arc::new(first_post),
         recorded: Arc::new(AtomicBool::new(false)),
+        last_body: Arc::new(std::sync::Mutex::new(None)),
     };
 
     let post_state = state.clone();
@@ -100,8 +109,10 @@ async fn spawn_mock_rzp(first_post: FirstPost) -> (String, MockRzp) {
         .route(
             "/payments/:id/refund",
             axum::routing::post(
-                move |axum::extract::Path(_id): axum::extract::Path<String>| async move {
+                move |axum::extract::Path(_id): axum::extract::Path<String>,
+                      axum::Json(body): axum::Json<serde_json::Value>| async move {
                     let n = post_state.refund_posts.fetch_add(1, Ordering::SeqCst) + 1;
+                    *post_state.last_body.lock().unwrap() = Some(body);
                     if n == 1 && !matches!(*post_state.first_post, FirstPost::Succeed) {
                         match *post_state.first_post {
                             FirstPost::LostResponse => {
@@ -120,6 +131,9 @@ async fn spawn_mock_rzp(first_post: FirstPost) -> (String, MockRzp) {
         .route(
             "/payments/:id/refunds",
             axum::routing::get(move || async move {
+                if let Some(items) = &list_items {
+                    return axum::Json(serde_json::json!({ "items": items }));
+                }
                 if list_state.recorded.load(Ordering::SeqCst) {
                     axum::Json(serde_json::json!({ "items": [ { "amount": 50_000 } ] }))
                 } else {
@@ -266,4 +280,53 @@ fn payment_link_routes_off_payments_endpoint() {
     };
     let (url, _body) = gw.endpoint_for(&request);
     assert!(url.ends_with("/payment_links"), "payment links must not hit {url}");
+}
+
+#[tokio::test]
+async fn lost_response_probe_matches_receipt_not_amount() {
+    // A FOREIGN refund with the same amount but a different receipt must NOT
+    // satisfy the dedup probe — matching is by our decision_id receipt.
+    let foreign_refunds = serde_json::json!([
+        { "amount": 50_000, "receipt": "some-other-flow-decision" }
+    ]);
+    let (base, mock) = spawn_mock_rzp_with_list(FirstPost::LostResponse, Some(foreign_refunds)).await;
+    let gw = gateway(&base);
+    use action_service::RazorpayGateway as _;
+
+    let decision_id = generate_correlation_id();
+    let resp = gw.execute(&refund_request(50_000), decision_id).await;
+    assert!(resp.is_ok(), "should retry past the foreign refund and succeed");
+
+    // Two POSTs: the lost first attempt, then a legitimate retry (probe
+    // correctly rejected the foreign same-amount refund).
+    assert_eq!(mock.refund_posts.load(Ordering::SeqCst), 2);
+
+    // The receipt we send IS the decision id — that's what makes the probe exact.
+    let body = mock.last_body.lock().unwrap().clone().unwrap();
+    assert_eq!(body["receipt"], decision_id.to_string());
+}
+
+#[tokio::test]
+async fn lost_response_probe_matches_our_receipt_even_at_different_amount() {
+    // Inverse: OUR receipt in the list means it landed, even if Razorpay
+    // recorded a different amount than requested (partial-refund rounding).
+    let our_receipt = serde_json::json!([
+        { "amount": 49_999, "receipt": "fixed-receipt-value" }
+    ]);
+    let (base, _mock) = spawn_mock_rzp_with_list(FirstPost::LostResponse, Some(our_receipt)).await;
+    let gw = gateway(&base);
+    use action_service::RazorpayGateway as _;
+
+    let decision_id = uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000000").unwrap();
+    // MockGateway-style fixed receipt: execute stamps receipt = decision_id,
+    // so craft the list to match whatever decision id we pass.
+    let (base, _mock) = {
+        // Rebuild list with the actual decision id receipt.
+        let items = serde_json::json!([{ "amount": 49_999, "receipt": decision_id.to_string() }]);
+        drop(gw);
+        spawn_mock_rzp_with_list(FirstPost::LostResponse, Some(items)).await
+    };
+    let gw = gateway(&base);
+    let resp = gw.execute(&refund_request(50_000), decision_id).await.unwrap();
+    assert_eq!(resp["deduplicated_after_upstream_error"], true);
 }

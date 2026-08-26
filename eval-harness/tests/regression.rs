@@ -184,10 +184,67 @@ fn degradation_recall_holds_and_uncertainty_routes_to_humans() {
 fn randomized_world_shapes_recall_stays_above_95_percent() {
     // Reduced draws for CI runtime; the full 140-world sweep runs via
     // `cargo run --release -p eval-harness`.
-    let (precision, recall, worlds) = eval_harness::robustness::run_randomized_sweep(6, 987_654);
+    // Precision is pooled OVER legitimate-overlap worlds: every flag there
+    // is a false positive and must count against the headline.
+    let (precision, recall, worlds, legit_flagged) = eval_harness::robustness::run_randomized_sweep(6, 987_654);
     assert!(worlds >= 30, "sweep too small to mean anything: {worlds}");
     assert!(recall >= 0.95, "randomized-world recall {recall:.1}% < 95%");
-    assert!(precision >= 0.95, "randomized-world precision {precision:.1}% < 95%");
+    assert!(
+        precision >= 0.95,
+        "randomized-world precision (incl. legit FPs) {precision:.1}% < 95%"
+    );
+    assert_eq!(legit_flagged, 0, "randomized sweep flagged innocent customers");
+}
+
+#[test]
+fn crc_budgets_hold_under_camouflage_and_drift_is_visible() {
+    // Cheap, honest validation: camouflage collapses separability so the CRC
+    // machinery is FORCED to spend its budgets — then we check it stays
+    // inside them. This is the only test that FAILS if the quantile math is
+    // wrong by one (the off-by-one shows up as z ≫ 2). Kept small (6 runs)
+    // so CI stays fast; the full 12-run table ships via the harness binary.
+    let suite = eval_harness::learned_suite();
+    let runs = eval_harness::stress::run_crc_stress(6, &suite);
+    let v = eval_harness::stress::summarize(
+        &runs,
+        eval_harness::conformal::DEFAULT_ALPHA_LEAK,
+        eval_harness::conformal::DEFAULT_ALPHA_FRICTION,
+    );
+    assert!(
+        v.leak_budget_holds,
+        "leak budget violated: mean {:.2}% vs {:.0}% budget, z={:.2} over {} customers (failed runs leaked {}/{})",
+        v.mean_leak_rate * 100.0,
+        v.alpha_leak * 100.0,
+        v.leak_z,
+        v.n_tested,
+        v.total_leaked,
+        v.total_leaked
+    );
+    assert!(
+        v.friction_budget_holds,
+        "friction budget violated: mean {:.3}% vs {:.0}% budget, z={:.2}",
+        v.mean_friction_rate * 100.0,
+        v.alpha_friction * 100.0,
+        v.friction_z
+    );
+    assert!(
+        v.mean_psi_camouflage > 0.20,
+        "camouflage must drift score histogram (PSI {:.3})",
+        v.mean_psi_camouflage
+    );
+    assert!(
+        v.mean_review_share > 0.15,
+        "overlap should route uncertainty to review (review share {:.1}%)",
+        v.mean_review_share * 100.0
+    );
+    for r in &runs {
+        assert!(
+            r.tau_clear < 0.15,
+            "run {} tau_clear {:.4} should collapse from clean ~0.23 under overlap",
+            r.run,
+            r.tau_clear
+        );
+    }
 }
 
 #[test]
