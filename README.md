@@ -1,248 +1,185 @@
-<div align="center">
+# Risk Governor
 
-# 🛡️ Risk Governor
+**A safety layer for AI agents that move money.**
 
-### A safety and governance layer for autonomous financial agents
+Agents with live Razorpay keys can refund, payout, and create orders while humans are asleep. Credential validity stops being the right check — *action validity* does.
 
-[![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
-![Rust](https://img.shields.io/badge/Rust-22--crate%20workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-201%20passing-1a7f37)
-![License](https://img.shields.io/badge/license-reserved-blue)
+Risk Governor sits in front of the gateway and answers one question for every agent intent: **ALLOW · REVIEW · BLOCK**. Nothing touches Razorpay unless it passes.
 
-**AI agents can now execute refunds, payouts, and orders on payment platforms
-like Razorpay. That creates a new authorization gap:**
-
-> ### valid API credentials ≠ a valid financial action
-
-Risk Governor is a decision layer that scores every agent-initiated action
-*before* it reaches an execution API — and answers with **ALLOW / REVIEW / BLOCK**.
-
-</div>
+<p>
+  <a href="https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml"><img src="https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/Rust-workspace-dea584?logo=rust" alt="Rust">
+  <img src="https://img.shields.io/badge/tests-201%20passing-1a7f37" alt="tests">
+  <img src="https://img.shields.io/badge/license-reserved-blue" alt="license">
+</p>
 
 ---
 
-## System Status & Honest Engineering Classification
+## Why this exists
 
-To maintain absolute architectural transparency, all capabilities in this repository are categorized as follows:
+Razorpay calls 2026 the "Age of Agentic Payments." Agents will initiate payouts, build checkouts, and operate on financial rails at machine speed.
 
-| Classification | Component / Feature | Technical Grounding |
-|---|---|---|
-| **`[IMPLEMENTED]`** | **Conformal Risk Control (`eval-harness`)** | Pure-Rust CRC split-conformal predictor with declared finite-sample loss bounds ($\alpha_{leak} \le 2\%$). |
-| **`[IMPLEMENTED]`** | **Tamper-Evident Audit Chain (`audit-service`)** | Running SHA-256 hash chain (`previous_hash` $\to$ `current_hash`) with canonical key-sorted JSON byte serialization. |
-| **`[IMPLEMENTED]`** | **Strict Serde Input Validation (`risk-governor-types`)** | `#[serde(deny_unknown_fields)]` actively rejects key-injection payloads at deserialization. |
-| **`[IMPLEMENTED]`** | **Union-Find Graph Clusterer (`risk-graph`)** | Transitive entity link merger detecting coordinated return abuse rings across shared devices/addresses. |
-| **`[TEST-MODE]`** | **Razorpay Gateway Proxy (`razorpay-gateway`)** | Dispatches authorized actions to live Razorpay Test Mode endpoints (`/v1/refunds`, `/v1/payouts`, `/v1/payment_links`). |
-| **`[TEST-MODE]`** | **Lost-Response Receipt Probe (`razorpay-gateway`)** | Queries Razorpay receipt list before retrying 5xx gateway timeouts to prevent double-refunds. |
-| **`[DESIGN GUARANTEE]`** | **Execution Proxy Trust Boundary** | AI Agents hold **zero** Razorpay secret keys. Credentials exist strictly in `governor-server`, forming a non-bypassable proxy gate. |
-| **`[SIMULATED]`** | **Synthetic Adversarial Dataset (`dataset-gen`)** | Generates 6 adversarial multi-world sweeps (refund rings, return abuse, merchant collusion) for offline evaluation. |
-| **`[LIMITATION]`** | **Supported Currency Allowlist** | Validates ISO-style currency codes against an explicit supported allowlist (`INR`, `USD`, `EUR`, `GBP`, `SGD`, `AED`, `AUD`, `CAD`), not an offline ISO 4217 database. |
+That creates a gap: **valid API credentials ≠ valid financial action**. An agent can be authenticated and still be wrong — wrong amount, wrong payment state, wrong intent, duplicated by a retry.
+
+Risk Governor is a non-bypassable proxy. The agent never sees the Razorpay secret. It proposes an intent; the governor checks it; only then does money move. Every check is logged in a tamper-evident chain you can replay later.
 
 ---
 
-## The problem
+## 60-second demo
 
-Razorpay has called 2026 the *"Age of Agentic Payments"*: AI agents that
-initiate payouts, CLIs built for the agent era, infrastructure so agents can
-transact at scale. But when software agents act while humans sleep, granting
-agents direct, un-monitored access to live financial API keys creates severe loss risk.
-
-**Risk Governor solves this via an Execution Proxy Trust Boundary:**
-- **The AI Agent does NOT hold Razorpay API secret keys.** It interacts solely with the Governor's decision layer via restricted MCP tools or `/v1/actions`.
-- **The Risk Governor holds the Razorpay API credentials** (`RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`).
-- An agent proposes an action intent payload; the Governor evaluates it against Policy, Risk, Graph, and Investigation planes; and **ONLY if evaluated as ALLOW (or approved via Human Review)** does the Governor execute the call against Razorpay APIs.
-
-This sits above existing fraud models and answers the fundamental question: *should this autonomous agent be allowed to move this money, right now?*
-
-## Quick start
+No keys, no network, no setup.
 
 ```bash
 git clone https://github.com/theoxfaber/agentic-payment-risk-governor
 cd agentic-payment-risk-governor
-./demo.sh          # full walkthrough in ~60s — no credentials, no network
+./demo.sh
 ```
 
-The demo drives the complete story live: a ₹500 refund → **ALLOW**, a ₹1,500
-refund → **REVIEW** (full audit replay, human approves, held call fires), a
-₹6,000 "URGENT bypass" refund → **BLOCK**, an agentic payout through the same
-gates, then the held-out evaluation results.
+What it shows:
 
-## Architecture
+- **₹500 refund** → ALLOW — executes, writes audit hash
+- **₹1,500 refund** → REVIEW — parks for human approval, replay the trail, approve → executes
+- **₹6,000 “URGENT bypass”** → BLOCK — never touches the API
+- **Payout** through the same gates
+- **Held-out evaluation** — the numbers below, recomputed live
 
-Every action flows through four independent planes before any money moves.
-Each plane writes to an immutable audit trail, so any decision can be replayed
-and explained after the fact.
+Dashboard at `http://127.0.0.1:8080` shows the decision stream, full replay, and a one-click approve. Metrics at `/metrics`.
+
+---
+
+## How it works
+
+Four independent planes, one combiner. Every plane writes to the same audit log.
 
 ```mermaid
 flowchart LR
-    AGENT["🤖 AI Agent / MCP Tool<br/>(No Razorpay Keys)"] -->|"Proposes intent payload<br/>(refund/payout/link)"| PIPELINE
-
-    subgraph PIPELINE["Risk Governor (Execution Proxy)"]
+    A["Agent<br/>(no keys)"] -->|"intent: refund / payout / link"| G
+    subgraph G["Risk Governor"]
         direction LR
-        POLICY["Policy Engine<br/>─────────<br/>Hard caps, velocity,<br/>ISO currency, scope"]
-        RISK["Risk Engine<br/>─────────<br/>True Z-score stddev<br/>+ intent extraction"]
-        GRAPH["Entity Graph<br/>─────────<br/>Union-Find abuse<br/>ring clusterer"]
-        INVEST["Investigation Engine<br/>─────────<br/>Evidence FOR/AGAINST<br/>confidence & verdicts"]
-        COMBINE{{"Combiner"}}
-        POLICY --> RISK --> GRAPH --> INVEST --> COMBINE
+        P["Policy"] --> R["Risk"] --> Gr["Graph"] --> I["Investigation"] --> C{{"Combine"}}
     end
-
-    COMBINE -->|"✅ ALLOW"| RZP["⚡ Razorpay API<br/>(Governor holds keys)"]
-    COMBINE -->|"🟡 REVIEW"| HUMAN["👤 Human Review Queue<br/>approval → controlled execution"]
-    COMBINE -->|"🔴 BLOCK"| NOPE["🚫 Rejected —<br/>never touches API"]
-
-    AUDIT[("SHA-256 Tamper-Evident Audit Chain")]
-    PIPELINE -.->|"Record + Input Hash<br/>+ SHA-256 Chaining"| AUDIT
-    HUMAN -.->|approved| RZP
-
-    style COMBINE fill:#fff8c5,stroke:#d4a72c
-    style AUDIT fill:#f6f8fa,stroke:#8b949e,stroke-dasharray: 4 3
+    C -- ALLOW --> RZ["Razorpay API"]
+    C -- REVIEW --> H["Human queue"]
+    C -- BLOCK --> X["Rejected"]
+    G -. audit .-> L[("Audit chain<br/>SHA-256")]
+    H -. approve .-> RZ
 ```
 
-One decision's audit lifecycle reads end-to-end:
+| Plane | What it checks | Fails how |
+| --- | --- | --- |
+| **Policy** | Caps, velocity, country allow/deny, custom rules, payment state (`captured` + paise balance) | Hard BLOCK |
+| **Risk** | Amount and velocity z-scores (true stddev), drift, agent history, intent mismatch | Score 0–1 |
+| **Graph** | Union-find over shared device/address/instrument → abuse rings | Cluster + resources |
+| **Investigation** | For vs. against evidence, confidence, verdict (Supported / Conflicted / Unsupported) | Review when unsure |
 
-```text
-action_requested → policy_evaluated → risk_scored → graph_analyzed
-→ decision_made → human_reviewed → razorpay_called
-```
+**Core rule:** high risk never means auto-block when evidence is contradictory or thin. Contradiction → REVIEW. No behavioral confirmation for a structural link → REVIEW. Evidence service down → REVIEW. Being sure matters more than being fast.
 
-## The core safety idea
+Audit event chain: `action_requested → policy_evaluated → risk_scored → graph_analyzed → decision_made → human_reviewed → razorpay_called`
 
-> **High risk cannot automatically mean BLOCK when the evidence is
-> contradictory or low-confidence.**
+Every record is canonical-JSON → SHA-256 chained (`previous_hash → current_hash`). Input hash covers the full intent so tampering is visible.
 
-The investigation engine weighs evidence *for and against* abuse
-(`Direction::{Supports, Contradicts}`), computes an `evidence_confidence`
-score, and escalates to human review when a high risk score lacks behavioral
-confirmation. A false BLOCK is not a safe failure — it's money movement denied
-to a legitimate user. The system is engineered to be *sure before it acts*,
-and humble when it can't be sure.
+---
 
-Three concrete behaviors this produces:
+## Results — held-out only
 
-| Scenario | Naive system | Risk Governor |
-|---|---|---|
-| High score, contradicted evidence | auto-BLOCK | **human REVIEW** (contradiction must be explained) |
-| Structurally linked cluster, no behavioral confirmation | auto-clear | **held for review** (absence of confirmation is itself suspicious) |
-| Evidence service down | silent-Allow on benign defaults | **forced REVIEW** (degradation is visible in the audit trail) |
+All thresholds are tuned on calibration worlds (seed 2026). The table below is measured on **three held-out seeds the detector never saw**.
 
-## Results
-
-Synthetic labeled dataset across adversarial worlds (return-abuse rings,
-refund abuse, distributed rings, merchant collusion, adaptive evasion,
-household false-positive traps). **Protocol:** thresholds tuned on calibration
-worlds only; numbers below measured on **held-out worlds — three seeds the
-detector never saw**.
-
-<div align="center">
-<img src="docs/eval-results.svg" alt="Held-out evaluation: investigation engine achieves 100% precision and recall at zero false-positive cost where baselines miss 34% of abuse or flag innocents" width="900"/>
-</div>
+<p align="center">
+  <img src="docs/eval-results.svg" alt="Held-out precision and recall" width="860">
+</p>
 
 | Approach | Precision | Recall | FP cost | FN cost | Prevented |
-|---|---:|---:|---:|---:|---:|
-| Rules only (per-customer rate) | 100% | 66% | ₹0 | ₹34,650 | ₹1,68,300 |
+| --- | --- | --- | --- | --- | --- |
+| Per-customer rate rule | 100% | 66% | ₹0 | ₹34,650 | ₹1,68,300 |
 | Structural clustering only | 51% | 100% | ₹65,925 | ₹0 | ₹2,02,950 |
-| **Investigation engine (hybrid)** | **100%** | **100%** | **₹0** | **₹0** | **₹2,02,950** |
-| Learned logistic regression | 100% | 100% | ₹0 | ₹0 | ₹2,02,950 |
-| LR + conformal economics (`calibrated_lr_crc`) | 100% | 94% | ₹0 | ₹1,350 | ₹2,01,600 |
+| **Investigation engine** | **100%** | **100%** | **₹0** | **₹0** | **₹2,02,950** |
+| Learned logistic (pure Rust) | 100% | 100% | ₹0 | ₹0 | ₹2,02,950 |
+| LR + conformal economics | 100% | 94% | ₹0 | ₹1,350 | ₹2,01,600 |
 
-The last two rows are a pure-Rust logistic regression trained **only on
-calibration worlds** — held-out numbers. The calibrated variant concedes
-₹1,350 of prevented value *on purpose*: it auto-allows only when being wrong
-costs less than one ₹400 human review (`p̂ × exposure ≤ review_cost`), and its
-auto-block threshold comes from [Conformal Risk Control](docs/AI_DESIGN.md)
-with declared budgets — fraud-leak ≤ 2%, friction ≤ 1%, finite-sample valid.
-Spending human time to prevent ₹13.50 is bad economics, and the system can
-say so with a number instead of a vibe.
+The last row is intentional. It only auto-allows when being wrong costs less than a human review (`p̂ × exposure ≤ ₹400`). Conceding ₹1,350 is cheaper than spending ₹400 of reviewer time to prevent ₹13.50 — and the system reports that tradeoff as a number, not a feeling. Auto-block threshold comes from Conformal Risk Control (fraud-leak ≤ 2%, friction ≤ 1%), finite-sample valid. Details in [docs/AI_DESIGN.md](docs/AI_DESIGN.md).
 
-False-positive check across **all** held-out household + coincidental-sharing
-seeds — 972 legitimate customers sharing devices, addresses, NAT IPs:
+**False positives on 972 legitimate customers** who share devices, addresses, and NAT IPs:
 
-- rules-only misses most abuse outright
-- clustering-only flags innocents (₹16,988 friction cost)
-- investigation engine, learned LR, and the CRC-calibrated detector each flag **0 of 972**
+- Rules-only misses most abuse; clustering-only flags 72 of 972 (₹16,988)
+- Investigation, learned LR, and calibrated LR each flag **0 of 972**
 
-Regression tests enforce these properties on every held-out seed — recall ≥90%
-under adversarial evasion and zero false positives are CI gates, not claims.
+Regression tests gate these properties on every held-out seed. They are not claims.
 
-### What breaks first when the data gets messy
+### When data gets messy
 
-The table above is *clean-data* performance. Real evidence pipelines degrade:
-behavioral records go missing, timestamps drift, event counters are noisy.
-Rather than pretend otherwise, the harness degrades held-out worlds along
-those axes and measures it (`cargo run --release -p eval-harness` prints the
-full sweep):
+Real pipelines lose records, clocks drift, counters are noisy. The harness degrades held-out worlds and measures it:
 
-| Mess level | Precision | Recall | Legit customers flagged | Human-review share |
-|---|---:|---:|---:|---:|
-| clean | 100% | 100% | **0** of 2,136 | 1% |
-| mild (10% missing data, ±12h jitter) | 100% | 100% | 3 of 1,929 | 30% |
-| heavy (30% missing, ±48h jitter, count noise) | 100% | 100% | **24** of 1,519 | 72% |
+| Condition | Precision | Recall | Legit flagged | To review |
+| --- | --- | --- | --- | --- |
+| Clean | 100% | 100% | 0 of 2,136 | 1% |
+| Mild: 10% missing, ±12h jitter | 100% | 100% | 3 of 1,929 | 30% |
+| Heavy: 30% missing, ±48h jitter, count noise | 100% | 100% | 24 of 1,519 | 72% |
 
-Read honestly, this shows both the strength and the cost of the design:
+Recall holds because uncertainty is routed to humans. The cost moves to workload — the knob you would tune in production, and the harness shows you how.
 
-- **Recall never collapses** — even with 30% of evidence missing, no abuser is
-  silently cleared, because falling confidence escalates to humans instead of
-  guessing (review share climbs 1% → 72%). That is the core safety property
-  working under stress.
-- **The bill moves to friction and workload** — legitimate customers start
-  getting flagged (0 → 24, ~1.6%) and human reviewers carry more load. In a
-  real deployment those are the tuning knobs you'd watch, and this harness is
-  how you'd watch them.
+### Beyond hand-built templates
 
-And because "100% on your own templates" proves little, the sweep also draws
-**140 randomly-parameterized worlds** (population size, ring count, ring size
-never tuned against):
+140 worlds with random population size, ring count, and ring size — never tuned against:
 
-> investigation engine across 140 randomly-drawn worlds:
-> **precision 100%, recall 99.4%** — legitimate-world false positives pooled
-> into the headline, 0 flagged
+> **investigation engine: 100% precision, 99.4% recall** (legit-world FPs pooled, 0 flagged)
 
-Not perfect — one ring in a few hundred slips through when random draws
-produce near-evasion shapes. That gap is a more credible number than another
-clean 100%.
+### The conformal bound — tested, not just claimed
 
-**CRC guarantee validation — clean tables don't exercise the bound.** Calibrating
-on clean, separable worlds leaves the conformal budgets unconsumed. `stress.rs`
-camouflages abusers toward the legitimate manifold and re-calibrates per run;
-over 12 fresh runs the pooled leak and friction sit *on* their budgets
-(≈2% and ≈1%, z < 1 within binomial noise) while review share inflates ~2→36%
-and PSI fires at ~1.0 — the designed conservative response. Details, including
-the mixture-mismatch that first violated the bound (87% leak when cohort and
-deployment mixtures differed), in [docs/AI_DESIGN.md §2.6](docs/AI_DESIGN.md).
+Clean worlds are too separable to spend the budgets. `stress.rs` camouflages abusers toward the legit manifold and re-calibrates per run. Over 12 fresh runs (2,616 customers):
 
-The full methodology — why logistic regression, why an LLM never decides,
-how the conformal budgets work, and the production label-maturation path —
-is in [docs/AI_DESIGN.md](docs/AI_DESIGN.md).
+- **leaked 53 vs budget 52, z=0.09 — holds**
+- **blocked-legit 31 vs budget 26, z=0.95 — holds**
+- review share 2% → 36%, PSI ≈ 1.0 fires before any label exists
 
-## What's real vs simulated
+First attempt that mixed calibration and deployment mixtures violated at 87% — documented as the mixture-mismatch lesson. The harness now requires deployment-matched calibration. See §2.6 in [AI_DESIGN.md](docs/AI_DESIGN.md).
 
-Said plainly, because credibility matters more than impressions:
+---
 
-- ✅ **Real:** the decision pipeline, entity graph, evidence-based reasoning,
-  a **learned scoring layer** (pure-Rust logistic regression trained on
-  calibration worlds only, thresholds calibrated by Conformal Risk Control
-  with declared fraud-leak/friction budgets — see docs/AI_DESIGN.md),
-  AI-assisted intent extraction (LLM-backed when configured, prompt-injection
-  hardened — claims are evidence only, never the decision-maker), audit/replay,
-  NATS distribution, chaos tests, API-key auth with constant-time comparison,
-  idempotent gateway execution with a refund lost-response guard,
-  PSI drift monitoring, and live Razorpay test-mode API calls
-- ⚠️ **Simulated:** the dataset is synthetic and labeled by construction.
-  Held-out metrics, randomized-parameter sweeps, and degradation tests prove
-  the reasoning generalizes across unseen world draws and messy data — not
-  production performance. The learned layer's training/calibration data is
-  synthetic; wiring it to matured production labels (via Razorpay webhooks)
-  is the stated next milestone. No claim of access to Razorpay's production
-  risk systems or internal models
-- 🚫 **Not claimed:** access to Razorpay production systems or internal models;
-  this layer composes with platform-side fraud models, never replaces them
+## Security properties
 
-## Wire governance into any AI agent
+- **Credential isolation.** Agents never hold Razorpay keys. Only `governor-server` does. MCP tools and `/v1/actions` are the only entry points.
+- **Auth.** `X-API-Key` or `Authorization: Bearer`, constant-time compare (`subtle`). Dashboard carries no secret — key lives in the browser's `sessionStorage`.
+- **Audit.** Canonical JSON, SHA-256 hash chain, `deny_unknown_fields` on inputs. Replay reconstructs any decision.
+- **Idempotency.** Decision dedup (second `execute()` returns cached response) + deterministic `Idempotency-Key: rfnd_{payment_id}_{decision_id}` on every gateway POST + lost-response guard that probes Razorpay's refund list by `receipt == decision_id` before resending a 5xx. Retries never double-charge.
+- **Financial invariants.** All amounts are integer paise (no floats). Refunds require `payment_state == "captured"` and `amount ≤ captured - refunded` (checked subtraction) — over-refund is a policy BLOCK. Validation rejects `amount ≤ 0` and unknown currencies (400, not 500). Custom rules with unknown conditions fail closed.
+- **Concurrency.** Approval is claim-under-lock: the REVIEW is removed from the map before the gateway call, so 8 concurrent approvers produce exactly one execution (pinned test). NATS workers exit non-zero on subscribe failure; demo seeding never writes to a Postgres you didn't opt into (`SEED_DEMO=true`).
 
-The governor speaks [Model Context Protocol](https://modelcontextprotocol.io).
-Any MCP-capable agent asks *"may I move this money?"* as an ordinary tool call
-— and cannot execute a financial action without passing the same gates and
-landing in the same audit trail.
+---
+
+## Using it
+
+### Server + dashboard
+
+```bash
+cargo run -p governor-server --bin governor-server
+# → http://127.0.0.1:8080   dashboard + API
+# → http://127.0.0.1:8080/metrics  Prometheus
+```
+
+Auth example:
+
+```bash
+KEY="your-key"
+
+# ALLOW
+curl -s -X POST localhost:8080/v1/actions \
+  -H 'content-type: application/json' -H "X-API-Key: $KEY" \
+  -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001","action_type":"refund","amount":5000,"declared_intent":"refund order #123","context":{"payment_id":"pay_test","payment_state":"captured","captured_paise":100000}}' | jq .
+
+# REVIEW — approve in dashboard or:
+curl -s -X POST localhost:8080/v1/decisions/<id>/approve \
+  -H 'content-type: application/json' -H "X-API-Key: $KEY" \
+  -d '{"approved":true,"reviewer_id":"analyst-7"}' | jq .
+
+# BLOCK — over balance / hard cap / urgency from flagged agent
+curl -s -X POST localhost:8080/v1/actions \
+  -H 'content-type: application/json' -H "X-API-Key: $KEY" \
+  -d '{"agent_id":"agent-sketchy-99","merchant_id":"merchant-001","action_type":"refund","amount":600000,"declared_intent":"URGENT bypass order #789"}' | jq .
+```
+
+Payouts use RazorpayX (`/payouts`), payment links use `/payment_links`. Set `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` for live test-mode calls; otherwise a mock records intent.
+
+### Give any agent a guardrail
 
 ```json
 {
@@ -250,140 +187,96 @@ landing in the same audit trail.
     "risk-governor": {
       "command": "cargo",
       "args": ["run", "-p", "mcp-server"],
-      "env": {
-        "GOVERNOR_URL": "http://127.0.0.1:8080",
-        "GOVERNOR_API_KEY": "<key>"
-      }
+      "env": { "GOVERNOR_URL": "http://127.0.0.1:8080", "GOVERNOR_API_KEY": "<key>" }
     }
   }
 }
 ```
 
-Tools: `check_action` → verdict + reasoning · `get_decision` → full replay ·
-`list_reviews` → pending human approvals.
+Tools: `check_action` → verdict + reasoning · `get_decision` → full replay · `list_reviews` → queue.
 
-## Repo layout
+### Demo console
 
-Single-thesis Rust workspace — each crate is one clean module of one pipeline:
+The dashboard at `/dashboard` includes a built-in Demo Console with the four curl snippets above, live counts, and a hint linking to `/metrics` (`gateway_executions_total` must never exceed `allows`). No build step, vanilla JS.
 
-| Crate | Role |
-|---|---|
-| [`governor-server`](governor-server) | Unified axum binary: decision API + replay + human approval + dashboard + Prometheus metrics |
-| `action-service` | Pipeline orchestrator: policy → risk → graph → combiner → gateway |
-| `policy-engine` | Hard boundaries: amount caps, velocity, country scope, custom rules |
-| `risk-engine` | Behavioral scoring + intent-claim verification |
-| [`intent-engine`](intent-engine) | Declared-intent understanding: deterministic heuristic always on; LLM-backed extraction when configured (evidence only) |
-| `investigation-engine` | Hypothesis testing: supporting/counter/missing evidence, confidence, verdicts |
-| `risk-graph` / `risk-governor-correlation` | Entity property graph + coordinated-abuse clustering |
-| `evidence-service` / `pg-store` | Agent behavioral history (in-memory or Postgres) |
-| `audit-service` / `risk-governor-replay` | Immutable decision trail + after-the-fact replay |
-| [`razorpay-gateway`](razorpay-gateway) | Test-mode client: basic auth, retry/backoff, per-decision idempotency, refund lost-response guard |
-| [`mcp-server`](mcp-server) | MCP tools so any AI agent routes through governance |
-| `nats-link` | Distributed mode: pipeline split across processes via NATS |
-| `dashboard` | Live decision stream, replay viewer, human-approval UI — vanilla JS, zero build step |
-| `dataset-gen` / `eval-harness` | Labeled adversarial worlds + calibration/held-out evaluation; learned layer (`lr`, `conformal`, `learned`) trained on calibration worlds only |
-| `webhook-consumer`, `evaluation-service`, `infra-probe` | Supporting services |
+---
 
-Design docs: [docs/AI_DESIGN.md](docs/AI_DESIGN.md) (intelligence-layer
-architecture and references) · [docs/BUGS.md](docs/BUGS.md) (every real bug
-hit, how it was caught, how it's pinned) · [docs/TESTING.md](docs/TESTING.md).
+## Project map
 
-## Run the pieces yourself
+Each crate is one pipeline stage — easy to read, easy to replace.
 
-<details>
-<summary><b>API server + live dashboard</b></summary>
+| Crate | Does |
+| --- | --- |
+| `governor-server` | Axum API, replay, approval, dashboard, Prometheus |
+| `action-service` | Orchestrator: policy → risk → graph → combiner → gateway |
+| `policy-engine` | Caps, velocity, country, payment-state/balance, custom rules |
+| `risk-engine` | Z-scores + intent-mismatch scoring |
+| `intent-engine` | Heuristic + optional LLM extraction (evidence-only, hardened) |
+| `investigation-engine` | For/against evidence, confidence, verdicts |
+| `risk-graph` · `risk-governor-correlation` | Property graph + coordinated-abuse clustering |
+| `evidence-service` · `pg-store` | History (memory or Postgres) |
+| `audit-service` · `risk-governor-replay` | Append-only trail + replay |
+| `razorpay-gateway` | Test-mode client, retries, idempotency, lost-response guard |
+| `mcp-server` | MCP stdio tools |
+| `nats-link` | Split pipeline over NATS |
+| `dashboard` | Single-page UI, zero build |
+| `dataset-gen` · `eval-harness` | Synthetic worlds + held-out evaluation + learned layer (`lr`, `conformal`, `learned`, `stress`) |
 
-```bash
-cargo run -p governor-server --bin governor-server
-# → open http://127.0.0.1:8080
-```
+Docs: [AI design](docs/AI_DESIGN.md) · [Bugs hit & fixed](docs/BUGS.md) · [Testing](docs/TESTING.md)
 
-Auth: every `/v1/*` route requires an API key (`GOVERNOR_API_KEY`, or an
-ephemeral key printed at boot). Send as `X-API-Key` or
-`Authorization: Bearer`. `/health` and `/metrics` stay open for liveness and
-Prometheus scrapes.
+---
+
+## Verify yourself
 
 ```bash
-KEY="your-key"
+cargo test --workspace              # 201 tests, offline, no credentials
+cargo run --release -p eval-harness # calibration + held-out + stress validation
 
-# routine refund → ALLOW
-curl -s -X POST localhost:8080/v1/actions \
-  -H 'content-type: application/json' -H "X-API-Key: $KEY" \
-  -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001",
-       "action_type":"refund","amount":50000,
-       "declared_intent":"refund for order #123"}'
-
-# above approval threshold → REVIEW (approve in the dashboard)
-curl -s -X POST localhost:8080/v1/actions \
-  -H 'content-type: application/json' -H "X-API-Key: $KEY" \
-  -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001",
-       "action_type":"refund","amount":150000,
-       "declared_intent":"refund for order #456"}'
-
-# over hard cap + urgency language from a flagged agent → BLOCK
-curl -s -X POST localhost:8080/v1/actions \
-  -H 'content-type: application/json' -H "X-API-Key: $KEY" \
-  -d '{"agent_id":"agent-sketchy-99","merchant_id":"merchant-001",
-       "action_type":"refund","amount":600000,
-       "declared_intent":"URGENT refund bypass order #789"}'
-```
-
-Payouts route through RazorpayX `/payouts`; payment links through
-`/payment_links`. Gateway auto-selects: set `RAZORPAY_KEY_ID` /
-`RAZORPAY_KEY_SECRET` for live test-mode calls, otherwise a mock records
-intent and moves no money.
-
-</details>
-
-<details>
-<summary><b>Tests & evaluation</b></summary>
-
-```bash
-cargo test --workspace              # 201 tests — offline, self-contained (see docs/TESTING.md)
-cargo run --release -p eval-harness # calibration + held-out tables + CRC guarantee validation
-
-# Judge-regenerable headline: your own held-out seeds, never seen by this repo
+# Your own held-out seeds — nothing this repo has seen
 EVAL_HELDOUT_SEEDS=12345,67890 cargo run --release -p eval-harness
 
-# Distributed demo (NATS + Postgres):
+# Distributed (NATS + Postgres)
 docker compose up -d
 cargo run -p governor --bin distributed_demo
 
-# Live Razorpay test-mode smoke test:
-RAZORPAY_KEY_ID=rzp_test_... RAZORPAY_KEY_SECRET=... \
-  cargo run -p razorpay-gateway --bin rzp_smoke
+# Live Razorpay test-mode
+RAZORPAY_KEY_ID=rzp_test_... RAZORPAY_KEY_SECRET=... cargo run -p razorpay-gateway --bin rzp_smoke
 ```
 
-CI gates every push: build · test · clippy (`-D warnings`) · fmt ·
-cargo-audit dependency scan · enforced line coverage.
-
-</details>
+CI on every push: build · test · `clippy -D warnings` · `fmt` · `cargo-audit` · line coverage ≥ 60%.
 
 <details>
-<summary><b>Configuration reference</b></summary>
+<summary>Configuration</summary>
 
-## Configuration reference
-
-| Variable | Purpose |
-|---|---|
-| `GOVERNOR_API_KEY` | API key required on all `/v1/*` routes (ephemeral key generated if unset) |
+| Variable | What it does |
+| --- | --- |
+| `GOVERNOR_API_KEY` | Required on `/v1/*` (ephemeral generated if unset) |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Live test-mode gateway (mock if unset) |
-| `DATABASE_URL` | Postgres persistence (in-memory if unset) |
-| `NATS_URL` | Distributed mode bus |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | LLM-backed intent extraction (heuristic if unset; prompt-injection hardened) |
-| `WEBHOOK_SECRET` | Webhook HMAC-SHA256 verification |
-| `SEED_DEMO` | With Postgres: opt-in (`true`/`1`) demo entity seeding — never implicit in production DBs |
-| `SCORE_REFERENCE_JSON` | 5-bucket risk-score reference distribution → exports PSI drift metric at `/metrics` |
+| `DATABASE_URL` | Postgres persistence (memory if unset) |
+| `NATS_URL` | Bus for distributed mode |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | LLM extraction (heuristic if unset) |
+| `WEBHOOK_SECRET` | HMAC-SHA256 for `X-Razorpay-Signature` |
+| `SEED_DEMO` | With Postgres, `true`/`1` to seed demo entities |
+| `SCORE_REFERENCE_JSON` | 5-bucket reference for PSI drift gauge at `/metrics` |
 
 See [.env.example](.env.example).
 
 </details>
 
+---
+
+## What's simulated, what's not
+
+- **Real:** decision pipeline, graph, evidence reasoning, learned scorer + conformal budgets (see above), hardened intent extraction, audit/replay, NATS, chaos tests, constant-time auth, idempotent gateway + receipt probe, PSI drift, live Razorpay test-mode calls.
+- **Simulated:** the dataset is synthetic. Held-out, random-world, degraded, and stress tests show the reasoning generalizes across unseen draws and messy data — not production performance. Learned weights are trained on synthetic labels; wiring to matured production labels (webhooks → `OutcomeRecorded` → nightly retrain, gated by PSI) is the next milestone.
+- **Not claimed:** access to Razorpay production risk systems. This composes with platform-side fraud models, never replaces them.
+
+---
+
 ## Roadmap
 
-- [ ] Label maturation loop: Razorpay dispute/refund webhooks → `OutcomeRecorded` training table → nightly retrain of the learned layer, gated by PSI + held-out metrics (docs/AI_DESIGN.md §4)
-- [ ] Server-side idempotency keys on the refund probe (Razorpay's native `X-Refund-Idempotency` header; current lost-response guard has a check-then-send race window)
-- [ ] Single-packet race testing for velocity controls
-- [ ] Dispute Responder: two-phase `draft → submit` contest flow against `/v1/disputes/:id/contest` behind the same human-approval gate
-- [ ] Segment-level conformal recalibration (new-account vs established cohorts) for conditional guarantee coverage
-- [ ] Payout-specific investigation hypotheses alongside return-abuse rings
+- Label maturation loop: webhooks → `OutcomeRecorded` → nightly retrain, gated by PSI + held-out metrics
+- Single-packet race tests for velocity
+- Dispute responder: `draft → submit` against `/v1/disputes/:id/contest` behind the same approval gate
+- Segment-level conformal recalibration (new vs. established cohorts)
+- Payout-specific investigation hypotheses
