@@ -73,6 +73,7 @@ impl action_service::EvidenceService for EvidenceOk {
                 total_volume_30d: 500_000,
                 avg_amount: 50_000,
                 max_amount: 100_000,
+                std_amount: 15_000,
                 refund_rate: 0.05,
                 block_rate: 0.02,
                 review_rate: 0.03,

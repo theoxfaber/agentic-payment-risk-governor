@@ -30,6 +30,7 @@ pub enum PolicyVerdict {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentActionRequest {
     pub agent_id: String,
     pub merchant_id: String,
@@ -42,6 +43,64 @@ pub struct AgentActionRequest {
     pub correlation_id: Uuid,
 }
 
+/// Recursively canonicalizes a serde_json::Value by sorting all object keys,
+/// producing deterministic byte representation independent of map order.
+pub fn canonical_json_bytes(val: &serde_json::Value) -> Vec<u8> {
+    match val {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let mut buf = Vec::new();
+            buf.push(b'{');
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 {
+                    buf.push(b',');
+                }
+                buf.extend(serde_json::to_vec(k).unwrap_or_default());
+                buf.push(b':');
+                buf.extend(canonical_json_bytes(&map[*k]));
+            }
+            buf.push(b'}');
+            buf
+        }
+        serde_json::Value::Array(arr) => {
+            let mut buf = Vec::new();
+            buf.push(b'[');
+            for (i, elem) in arr.iter().enumerate() {
+                if i > 0 {
+                    buf.push(b',');
+                }
+                buf.extend(canonical_json_bytes(elem));
+            }
+            buf.push(b']');
+            buf
+        }
+        other => serde_json::to_vec(other).unwrap_or_default(),
+    }
+}
+
+impl AgentActionRequest {
+    /// SHA-256 hash of the canonical request input state, establishing a tamper-evident reference.
+    pub fn input_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.agent_id.as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.merchant_id.as_bytes());
+        hasher.update(b"|");
+        hasher.update(format!("{:?}", self.action_type).as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.amount.to_be_bytes()); // fixed big-endian integer format
+        hasher.update(b"|");
+        hasher.update(self.currency.to_uppercase().as_bytes());
+        hasher.update(b"|");
+        hasher.update(self.declared_intent.as_bytes());
+        hasher.update(b"|");
+        hasher.update(canonical_json_bytes(&self.context));
+        hex::encode(hasher.finalize())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentHistory {
     pub agent_id: String,
@@ -49,6 +108,8 @@ pub struct AgentHistory {
     pub total_volume_30d: i64,
     pub avg_amount: i64,
     pub max_amount: i64,
+    #[serde(default)]
+    pub std_amount: i64,
     pub refund_rate: f64,
     pub block_rate: f64,
     pub review_rate: f64,
@@ -171,6 +232,37 @@ pub struct AuditRecord {
     pub event_type: AuditEventType,
     pub payload: serde_json::Value,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub previous_hash: Option<String>,
+    #[serde(default)]
+    pub current_hash: String,
+}
+
+impl AuditRecord {
+    /// Computes SHA-256 hash forming a cryptographic tamper-evident audit chain.
+    pub fn compute_hash(
+        record_id: Uuid,
+        decision_id: Option<Uuid>,
+        event_type: AuditEventType,
+        payload: &serde_json::Value,
+        created_at: DateTime<Utc>,
+        previous_hash: Option<&str>,
+    ) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(previous_hash.unwrap_or("GENESIS").as_bytes());
+        hasher.update(b"|");
+        hasher.update(record_id.to_string().as_bytes());
+        hasher.update(b"|");
+        hasher.update(decision_id.map(|d| d.to_string()).unwrap_or_default().as_bytes());
+        hasher.update(b"|");
+        hasher.update(format!("{:?}", event_type).as_bytes());
+        hasher.update(b"|");
+        hasher.update(canonical_json_bytes(payload));
+        hasher.update(b"|");
+        hasher.update(created_at.to_rfc3339().as_bytes());
+        hex::encode(hasher.finalize())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -161,13 +161,21 @@ where
         // Feedback loop: every processed request updates velocity/history.
         self.evidence_service.record_action(&request).await?;
 
+        let mut req_payload =
+            serde_json::to_value(&request).map_err(|e| ActionServiceError::Validation(e.to_string()))?;
+        if let Some(obj) = req_payload.as_object_mut() {
+            obj.insert("input_hash".into(), serde_json::Value::String(request.input_hash()));
+        }
+
         self.audit_service
             .record(AuditRecord {
                 record_id: generate_correlation_id(),
                 decision_id: did,
                 event_type: AuditEventType::ActionRequested,
-                payload: serde_json::to_value(&request).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
+                payload: req_payload,
                 created_at: now_utc(),
+                previous_hash: None,
+                current_hash: String::new(),
             })
             .await?;
 
@@ -181,6 +189,8 @@ where
                 payload: serde_json::to_value(&policy_result)
                     .map_err(|e| ActionServiceError::Validation(e.to_string()))?,
                 created_at: now_utc(),
+                previous_hash: None,
+                current_hash: String::new(),
             })
             .await?;
 
@@ -194,6 +204,8 @@ where
                 payload: serde_json::to_value(&risk_result)
                     .map_err(|e| ActionServiceError::Validation(e.to_string()))?,
                 created_at: now_utc(),
+                previous_hash: None,
+                current_hash: String::new(),
             })
             .await?;
 
@@ -209,6 +221,8 @@ where
                         event_type: AuditEventType::GraphAnalyzed,
                         payload,
                         created_at: now_utc(),
+                        previous_hash: None,
+                        current_hash: String::new(),
                     })
                     .await?;
                 Some(summary)
@@ -242,6 +256,8 @@ where
                 event_type: AuditEventType::DecisionMade,
                 payload: serde_json::to_value(&decision).map_err(|e| ActionServiceError::Validation(e.to_string()))?,
                 created_at: now_utc(),
+                previous_hash: None,
+                current_hash: String::new(),
             })
             .await?;
 
@@ -256,6 +272,8 @@ where
                         event_type: AuditEventType::RazorpayCalled,
                         payload: razorpay_response,
                         created_at: now_utc(),
+                        previous_hash: None,
+                        current_hash: String::new(),
                     })
                     .await?;
             }
@@ -374,6 +392,14 @@ pub fn validate_request(request: &AgentActionRequest) -> Result<(), ActionServic
     }
     if request.currency.is_empty() {
         return Err(ActionServiceError::Validation("currency is required".to_string()));
+    }
+    let valid_currencies = ["INR", "USD", "EUR", "GBP", "SGD", "AED", "AUD", "CAD"];
+    let curr_upper = request.currency.to_uppercase();
+    if !valid_currencies.contains(&curr_upper.as_str()) {
+        return Err(ActionServiceError::Validation(format!(
+            "unsupported or invalid currency '{}': must be ISO 4217 (e.g. INR, USD)",
+            request.currency
+        )));
     }
     if request.declared_intent.is_empty() {
         return Err(ActionServiceError::Validation(
@@ -528,6 +554,7 @@ mod tests {
                 total_volume_30d: 500_000,
                 avg_amount: 50_000,
                 max_amount: 100_000,
+                std_amount: 15_000,
                 refund_rate: 0.05,
                 block_rate: 0.02,
                 review_rate: 0.03,

@@ -835,6 +835,8 @@ dependencies = [
  "audit-service",
  "chrono",
  "evidence-service",
+ "hex",
+ "hmac",
  "investigation-engine",
  "nats-link",
  "policy-engine",
@@ -844,7 +846,9 @@ dependencies = [
  "risk-governor-replay",
  "risk-governor-types",
  "risk-graph",
+ "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]
@@ -2122,8 +2126,10 @@ name = "risk-governor-types"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 1.0.69",
  "uuid",
 ]

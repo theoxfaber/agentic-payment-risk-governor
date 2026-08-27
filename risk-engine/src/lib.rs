@@ -63,7 +63,12 @@ impl RiskEngine {
         let velocity = &evidence.recent_velocity;
 
         let amount_zscore = if agent.avg_amount > 0 {
-            (request.amount as f64 - agent.avg_amount as f64) / (agent.max_amount.max(1) as f64 * 0.5)
+            let std = if agent.std_amount > 0 {
+                agent.std_amount as f64
+            } else {
+                (agent.max_amount.max(1) as f64) * 0.5
+            };
+            (request.amount as f64 - agent.avg_amount as f64) / std.max(1.0)
         } else {
             0.0
         };
@@ -242,6 +247,7 @@ mod tests {
                 total_volume_30d: 720 * avg.max(1),
                 avg_amount: avg,
                 max_amount: max,
+                std_amount: 15_000,
                 refund_rate: 0.05,
                 block_rate: 0.02,
                 review_rate: 0.03,

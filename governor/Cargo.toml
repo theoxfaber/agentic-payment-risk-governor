@@ -25,6 +25,10 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 risk-graph = { path = "../risk-graph" }
 investigation-engine = { path = "../investigation-engine" }
+serde = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [[bin]]
 name = "governor"

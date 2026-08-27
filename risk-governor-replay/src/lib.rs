@@ -116,6 +116,7 @@ mod tests {
                     total_volume_30d: 500_000,
                     avg_amount: 50_000,
                     max_amount: 100_000,
+                    std_amount: 15_000,
                     refund_rate: 0.05,
                     block_rate: 0.02,
                     review_rate: 0.03,
@@ -154,6 +155,8 @@ mod tests {
                 event_type: AuditEventType::ActionRequested,
                 payload: serde_json::to_value(&decision.action).unwrap(),
                 created_at: now_utc(),
+                previous_hash: None,
+                current_hash: String::new(),
             },
             AuditRecord {
                 record_id: generate_correlation_id(),
@@ -161,6 +164,8 @@ mod tests {
                 event_type: AuditEventType::PolicyEvaluated,
                 payload: serde_json::json!({ "policy_version": "2026.08", "verdict": "allow" }),
                 created_at: now_utc(),
+                previous_hash: None,
+                current_hash: String::new(),
             },
         ];
         records.push(AuditRecord {
@@ -169,6 +174,8 @@ mod tests {
             event_type: AuditEventType::DecisionMade,
             payload: serde_json::to_value(decision).unwrap(),
             created_at: now_utc(),
+            previous_hash: None,
+            current_hash: String::new(),
         });
         for r in records {
             store.append(r).await.unwrap();
@@ -215,6 +222,8 @@ mod tests {
                 event_type: AuditEventType::DecisionMade,
                 payload: serde_json::to_value(&decision).unwrap(),
                 created_at: now_utc(),
+                previous_hash: None,
+                current_hash: String::new(),
             })
             .await
             .unwrap();

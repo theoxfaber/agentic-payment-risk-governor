@@ -21,18 +21,37 @@ Risk Governor is a decision layer that scores every agent-initiated action
 
 ---
 
+## System Status & Honest Engineering Classification
+
+To maintain absolute architectural transparency, all capabilities in this repository are categorized as follows:
+
+| Classification | Component / Feature | Technical Grounding |
+|---|---|---|
+| **`[IMPLEMENTED]`** | **Conformal Risk Control (`eval-harness`)** | Pure-Rust CRC split-conformal predictor with declared finite-sample loss bounds ($\alpha_{leak} \le 2\%$). |
+| **`[IMPLEMENTED]`** | **Tamper-Evident Audit Chain (`audit-service`)** | Running SHA-256 hash chain (`previous_hash` $\to$ `current_hash`) with canonical key-sorted JSON byte serialization. |
+| **`[IMPLEMENTED]`** | **Strict Serde Input Validation (`risk-governor-types`)** | `#[serde(deny_unknown_fields)]` actively rejects key-injection payloads at deserialization. |
+| **`[IMPLEMENTED]`** | **Union-Find Graph Clusterer (`risk-graph`)** | Transitive entity link merger detecting coordinated return abuse rings across shared devices/addresses. |
+| **`[TEST-MODE]`** | **Razorpay Gateway Proxy (`razorpay-gateway`)** | Dispatches authorized actions to live Razorpay Test Mode endpoints (`/v1/refunds`, `/v1/payouts`, `/v1/payment_links`). |
+| **`[TEST-MODE]`** | **Lost-Response Receipt Probe (`razorpay-gateway`)** | Queries Razorpay receipt list before retrying 5xx gateway timeouts to prevent double-refunds. |
+| **`[DESIGN GUARANTEE]`** | **Execution Proxy Trust Boundary** | AI Agents hold **zero** Razorpay secret keys. Credentials exist strictly in `governor-server`, forming a non-bypassable proxy gate. |
+| **`[SIMULATED]`** | **Synthetic Adversarial Dataset (`dataset-gen`)** | Generates 6 adversarial multi-world sweeps (refund rings, return abuse, merchant collusion) for offline evaluation. |
+| **`[LIMITATION]`** | **Supported Currency Allowlist** | Validates ISO-style currency codes against an explicit supported allowlist (`INR`, `USD`, `EUR`, `GBP`, `SGD`, `AED`, `AUD`, `CAD`), not an offline ISO 4217 database. |
+
+---
+
 ## The problem
 
 Razorpay has called 2026 the *"Age of Agentic Payments"*: AI agents that
 initiate payouts, CLIs built for the agent era, infrastructure so agents can
-transact at scale. But when software agents hold live credentials and act
-while humans sleep, credential validity stops being the security boundary.
+transact at scale. But when software agents act while humans sleep, granting
+agents direct, un-monitored access to live financial API keys creates severe loss risk.
 
-**Action validity does.**
+**Risk Governor solves this via an Execution Proxy Trust Boundary:**
+- **The AI Agent does NOT hold Razorpay API secret keys.** It interacts solely with the Governor's decision layer via restricted MCP tools or `/v1/actions`.
+- **The Risk Governor holds the Razorpay API credentials** (`RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`).
+- An agent proposes an action intent payload; the Governor evaluates it against Policy, Risk, Graph, and Investigation planes; and **ONLY if evaluated as ALLOW (or approved via Human Review)** does the Governor execute the call against Razorpay APIs.
 
-This is not a fraud rules engine. It sits above existing fraud models and
-answers a different question: *should this autonomous agent be allowed to move
-this money, right now?*
+This sits above existing fraud models and answers the fundamental question: *should this autonomous agent be allowed to move this money, right now?*
 
 ## Quick start
 
@@ -55,24 +74,24 @@ and explained after the fact.
 
 ```mermaid
 flowchart LR
-    AGENT["🤖 AI agent<br/>holds live credentials"] -->|"refund · payout<br/>+ declared intent"| PIPELINE
+    AGENT["🤖 AI Agent / MCP Tool<br/>(No Razorpay Keys)"] -->|"Proposes intent payload<br/>(refund/payout/link)"| PIPELINE
 
-    subgraph PIPELINE["Risk Governor"]
+    subgraph PIPELINE["Risk Governor (Execution Proxy)"]
         direction LR
-        POLICY["Policy<br/>Engine<br/>─────────<br/>hard boundaries:<br/>caps · velocity · scope"]
-        RISK["Risk<br/>Engine<br/>─────────<br/>behavioral scoring<br/>+ intent claims"]
-        GRAPH["Entity<br/>Graph<br/>─────────<br/>coordinated-abuse<br/>structure"]
-        INVEST["Investigation<br/>Engine<br/>─────────<br/>evidence FOR vs AGAINST<br/>confidence · verdicts"]
+        POLICY["Policy Engine<br/>─────────<br/>Hard caps, velocity,<br/>ISO currency, scope"]
+        RISK["Risk Engine<br/>─────────<br/>True Z-score stddev<br/>+ intent extraction"]
+        GRAPH["Entity Graph<br/>─────────<br/>Union-Find abuse<br/>ring clusterer"]
+        INVEST["Investigation Engine<br/>─────────<br/>Evidence FOR/AGAINST<br/>confidence & verdicts"]
         COMBINE{{"Combiner"}}
         POLICY --> RISK --> GRAPH --> INVEST --> COMBINE
     end
 
-    COMBINE -->|"✅ ALLOW"| RZP["⚡ Razorpay API<br/>money moves"]
-    COMBINE -->|"🟡 REVIEW"| HUMAN["👤 Human review<br/>dashboard approval →<br/>approve fires the call"]
-    COMBINE -->|"🔴 BLOCK"| NOPE["🚫 rejected —<br/>never touches the API"]
+    COMBINE -->|"✅ ALLOW"| RZP["⚡ Razorpay API<br/>(Governor holds keys)"]
+    COMBINE -->|"🟡 REVIEW"| HUMAN["👤 Human Review Queue<br/>approval → controlled execution"]
+    COMBINE -->|"🔴 BLOCK"| NOPE["🚫 Rejected —<br/>never touches API"]
 
-    AUDIT[("Immutable audit trail")]
-    PIPELINE -.->|"every evaluation,<br/>every decision"| AUDIT
+    AUDIT[("SHA-256 Tamper-Evident Audit Chain")]
+    PIPELINE -.->|"Record + Input Hash<br/>+ SHA-256 Chaining"| AUDIT
     HUMAN -.->|approved| RZP
 
     style COMBINE fill:#fff8c5,stroke:#d4a72c

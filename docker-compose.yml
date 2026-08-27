@@ -97,5 +97,24 @@ services:
       timeout: 3s
       retries: 12
 
+  ai-agent-sandbox:
+    image: alpine:latest
+    container_name: rg-agent-sandbox
+    command: ["sh", "-c", "echo 'AI Agent Sandboxed Network Active' && tail -f /dev/null"]
+    networks:
+      - agent-internal-net
+    environment:
+      # CRITICAL SAFETY INVARIANT: AI Agent receives NO Razorpay API keys!
+      GOVERNOR_URL: http://governor-server:8080
+    depends_on:
+      governor-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  agent-internal-net:
+    internal: true # Physical Docker network isolation: zero outbound route to internet (api.razorpay.com)
+  default:
+
 volumes:
   pgdata:

@@ -16,14 +16,15 @@ use uuid::Uuid;
 pub struct PgStore {
     pool: PgPool,
 }
-
 const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS audit_records (
-        record_id   UUID PRIMARY KEY,
-        decision_id UUID,
-        event_type  TEXT NOT NULL,
-        payload     JSONB NOT NULL,
-        created_at  TIMESTAMPTZ NOT NULL
+        record_id     UUID PRIMARY KEY,
+        decision_id   UUID,
+        event_type    TEXT NOT NULL,
+        payload       JSONB NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL,
+        previous_hash TEXT,
+        current_hash  TEXT NOT NULL DEFAULT ''
     )",
     "CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_records(decision_id)",
     "CREATE TABLE IF NOT EXISTS decisions (
@@ -183,13 +184,36 @@ impl PgStore {
 
 #[async_trait]
 impl AuditStore for PgStore {
-    async fn append(&self, record: AuditRecord) -> Result<(), AuditError> {
-        sqlx::query("INSERT INTO audit_records (record_id, decision_id, event_type, payload, created_at) VALUES ($1, $2, $3, $4, $5)")
+    async fn append(&self, mut record: AuditRecord) -> Result<(), AuditError> {
+        if record.current_hash.is_empty() {
+            // Get last hash from DB
+            let last_hash: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
+                "SELECT current_hash FROM audit_records ORDER BY created_at DESC LIMIT 1",
+            )
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| AuditError::Write(e.to_string()))?
+            .and_then(|(h,)| h);
+
+            record.previous_hash = last_hash;
+            record.current_hash = AuditRecord::compute_hash(
+                record.record_id,
+                record.decision_id,
+                record.event_type,
+                &record.payload,
+                record.created_at,
+                record.previous_hash.as_deref(),
+            );
+        }
+
+        sqlx::query("INSERT INTO audit_records (record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)")
             .bind(record.record_id)
             .bind(record.decision_id)
             .bind(event_type_str(record.event_type))
             .bind(record.payload)
             .bind(record.created_at)
+            .bind(record.previous_hash)
+            .bind(record.current_hash)
             .execute(&self.pool)
             .await
             .map_err(|e| AuditError::Write(e.to_string()))?;
@@ -197,8 +221,8 @@ impl AuditStore for PgStore {
     }
 
     async fn by_decision(&self, decision_id: Uuid) -> Result<Vec<AuditRecord>, AuditError> {
-        let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, serde_json::Value, chrono::DateTime<chrono::Utc>)>(
-            "SELECT record_id, decision_id, event_type, payload, created_at FROM audit_records WHERE decision_id = $1 ORDER BY created_at ASC",
+        let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, serde_json::Value, chrono::DateTime<chrono::Utc>, Option<String>, String)>(
+            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records WHERE decision_id = $1 ORDER BY created_at ASC",
         )
         .bind(decision_id)
         .fetch_all(&self.pool)
@@ -216,9 +240,11 @@ impl AuditStore for PgStore {
                 String,
                 serde_json::Value,
                 chrono::DateTime<chrono::Utc>,
+                Option<String>,
+                String,
             ),
         >(
-            "SELECT record_id, decision_id, event_type, payload, created_at FROM audit_records ORDER BY created_at ASC",
+            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records ORDER BY created_at ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -262,10 +288,12 @@ type RecordRow = (
     String,
     serde_json::Value,
     chrono::DateTime<chrono::Utc>,
+    Option<String>,
+    String,
 );
 
 fn row_to_record(
-    (record_id, decision_id, event_type, payload, created_at): RecordRow,
+    (record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash): RecordRow,
 ) -> Result<AuditRecord, AuditError> {
     Ok(AuditRecord {
         record_id,
@@ -274,6 +302,8 @@ fn row_to_record(
             .ok_or_else(|| AuditError::Write(format!("unknown event_type {event_type}")))?,
         payload,
         created_at,
+        previous_hash,
+        current_hash,
     })
 }
 

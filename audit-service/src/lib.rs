@@ -28,6 +28,7 @@ pub trait AuditStore: Send + Sync {
 #[derive(Default)]
 pub struct InMemoryAuditStore {
     records: RwLock<Vec<AuditRecord>>,
+    last_hash: RwLock<Option<String>>,
 }
 
 impl InMemoryAuditStore {
@@ -38,7 +39,20 @@ impl InMemoryAuditStore {
 
 #[async_trait::async_trait]
 impl AuditStore for InMemoryAuditStore {
-    async fn append(&self, record: AuditRecord) -> Result<(), AuditError> {
+    async fn append(&self, mut record: AuditRecord) -> Result<(), AuditError> {
+        let mut last = self.last_hash.write().await;
+        if record.current_hash.is_empty() {
+            record.previous_hash = last.clone();
+            record.current_hash = AuditRecord::compute_hash(
+                record.record_id,
+                record.decision_id,
+                record.event_type,
+                &record.payload,
+                record.created_at,
+                record.previous_hash.as_deref(),
+            );
+        }
+        *last = Some(record.current_hash.clone());
         self.records.write().await.push(record);
         Ok(())
     }
@@ -69,12 +83,16 @@ impl<S: AuditStore> AuditService<S> {
     /// Fire-and-forget friendly: errors are logged, never propagated to the caller,
     /// so a slow/full audit sink never blocks or fails a decision.
     pub async fn record(&self, event_type: AuditEventType, decision_id: Option<Uuid>, payload: serde_json::Value) {
+        let record_id = generate_correlation_id();
+        let created_at = Utc::now();
         let record = AuditRecord {
-            record_id: generate_correlation_id(),
+            record_id,
             decision_id,
             event_type,
             payload,
-            created_at: Utc::now(),
+            created_at,
+            previous_hash: None,
+            current_hash: String::new(),
         };
         if let Err(e) = self.store.append(record).await {
             tracing::error!(?event_type, ?decision_id, "audit append failed: {e}");
@@ -88,11 +106,50 @@ impl<S: AuditStore> AuditService<S> {
     pub async fn all_records(&self) -> Result<Vec<AuditRecord>, AuditError> {
         self.store.all().await
     }
+
+    /// Verifies the cryptographic tamper-evident integrity of an audit record chain.
+    pub fn verify_chain(records: &[AuditRecord]) -> Result<(), String> {
+        let mut prev_hash: Option<String> = None;
+        for (i, r) in records.iter().enumerate() {
+            let expected_hash = AuditRecord::compute_hash(
+                r.record_id,
+                r.decision_id,
+                r.event_type,
+                &r.payload,
+                r.created_at,
+                r.previous_hash.as_deref(),
+            );
+            if r.current_hash != expected_hash {
+                return Err(format!(
+                    "tamper detected at index {i} (record_id {}): hash mismatch (got {}, expected {})",
+                    r.record_id, r.current_hash, expected_hash
+                ));
+            }
+            if r.previous_hash != prev_hash && i > 0 {
+                return Err(format!(
+                    "chain broken at index {i}: previous_hash ({:?}) does not match prior record's hash ({:?})",
+                    r.previous_hash, prev_hash
+                ));
+            }
+            prev_hash = Some(r.current_hash.clone());
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl<S: AuditStore + 'static> action_service::AuditService for AuditService<S> {
-    async fn record(&self, record: AuditRecord) -> Result<(), action_service::ActionServiceError> {
+    async fn record(&self, mut record: AuditRecord) -> Result<(), action_service::ActionServiceError> {
+        if record.current_hash.is_empty() {
+            record.current_hash = AuditRecord::compute_hash(
+                record.record_id,
+                record.decision_id,
+                record.event_type,
+                &record.payload,
+                record.created_at,
+                record.previous_hash.as_deref(),
+            );
+        }
         self.store
             .append(record)
             .await
@@ -154,5 +211,60 @@ mod tests {
             .await;
         assert_eq!(svc.trail_for(a).await.unwrap().len(), 1);
         assert_eq!(svc.trail_for(b).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn audit_chain_passes_verification_when_untampered() {
+        let store = Arc::new(InMemoryAuditStore::new());
+        let svc = AuditService::new(store.clone());
+        let id = generate_correlation_id();
+        svc.record(
+            AuditEventType::ActionRequested,
+            Some(id),
+            serde_json::json!({"amt": 100}),
+        )
+        .await;
+        svc.record(
+            AuditEventType::PolicyEvaluated,
+            Some(id),
+            serde_json::json!({"verdict": "allow"}),
+        )
+        .await;
+        svc.record(
+            AuditEventType::DecisionMade,
+            Some(id),
+            serde_json::json!({"decision": "allow"}),
+        )
+        .await;
+
+        let records = svc.all_records().await.unwrap();
+        assert_eq!(records.len(), 3);
+        assert!(AuditService::<InMemoryAuditStore>::verify_chain(&records).is_ok());
+    }
+
+    #[tokio::test]
+    async fn audit_chain_detects_tampered_payload() {
+        let store = Arc::new(InMemoryAuditStore::new());
+        let svc = AuditService::new(store.clone());
+        let id = generate_correlation_id();
+        svc.record(
+            AuditEventType::ActionRequested,
+            Some(id),
+            serde_json::json!({"amt": 100}),
+        )
+        .await;
+        svc.record(
+            AuditEventType::DecisionMade,
+            Some(id),
+            serde_json::json!({"decision": "allow"}),
+        )
+        .await;
+
+        let mut records = svc.all_records().await.unwrap();
+        // Tamper with record #0 payload
+        records[0].payload = serde_json::json!({"amt": 999999});
+        let result = AuditService::<InMemoryAuditStore>::verify_chain(&records);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("tamper detected"));
     }
 }

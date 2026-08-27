@@ -188,6 +188,7 @@ fn fail_safe_evidence(request: &AgentActionRequest, reason: &str) -> GatheredEvi
             total_volume_30d: 0,
             avg_amount: 0,
             max_amount: 0,
+            std_amount: 0,
             refund_rate: 0.0,
             block_rate: 0.0,
             review_rate: 0.0,

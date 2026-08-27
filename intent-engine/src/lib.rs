@@ -145,14 +145,67 @@ impl HeuristicExtractor {
             }
         }
 
+        const NEGATION_WORDS: &[&str] = &["not", "don't", "dont", "no", "never", "without", "avoid", "non"];
+
         for w in URGENCY_WORDS {
-            if lowered.contains(w) {
-                claims.urgency_flags.push(w.to_string());
+            if let Some(pos) = lowered.find(w) {
+                // Check leading window for negation
+                let leading = &lowered[..pos];
+                let is_negated = leading
+                    .split_whitespace()
+                    .rev()
+                    .take(3)
+                    .any(|word| NEGATION_WORDS.contains(&word));
+                if !is_negated {
+                    claims.urgency_flags.push(w.to_string());
+                }
+            }
+        }
+
+        // Natural language Indian numbering support ("five thousand", "5 thousand", "1 lakh")
+        if claims.amount_paise.is_none() {
+            if lowered.contains("thousand") {
+                if let Some(num) = extract_number_before_word(&lowered, "thousand") {
+                    claims.amount_paise = Some(num * 1_000 * 100);
+                }
+            } else if lowered.contains("lakh") || lowered.contains("lac") {
+                let kw = if lowered.contains("lakh") { "lakh" } else { "lac" };
+                if let Some(num) = extract_number_before_word(&lowered, kw) {
+                    claims.amount_paise = Some(num * 100_000 * 100);
+                }
             }
         }
 
         claims
     }
+}
+
+fn extract_number_before_word(text: &str, target_word: &str) -> Option<i64> {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    for (i, tok) in tokens.iter().enumerate() {
+        if *tok == target_word && i > 0 {
+            let prev = tokens[i - 1];
+            if let Ok(v) = prev.parse::<i64>() {
+                return Some(v);
+            }
+            return match prev {
+                "one" => Some(1),
+                "two" => Some(2),
+                "three" => Some(3),
+                "four" => Some(4),
+                "five" => Some(5),
+                "six" => Some(6),
+                "seven" => Some(7),
+                "eight" => Some(8),
+                "nine" => Some(9),
+                "ten" => Some(10),
+                "fifty" => Some(50),
+                "hundred" => Some(100),
+                _ => None,
+            };
+        }
+    }
+    None
 }
 
 fn parse_number(token: &str) -> Option<i64> {
@@ -484,5 +537,34 @@ mod tests {
     fn sanitize_preserves_normal_intents() {
         let normal = "Refund of rs 1,500 for order #123 — customer returned damaged item";
         assert_eq!(sanitize_intent(normal), normal);
+    }
+
+    #[test]
+    fn heuristic_extractor_handles_negated_urgency() {
+        let claims1 = HeuristicExtractor::parse("This is not urgent, routine refund for order #10");
+        assert!(
+            claims1.urgency_flags.is_empty(),
+            "not urgent must not flag urgency: {:?}",
+            claims1.urgency_flags
+        );
+
+        let claims2 = HeuristicExtractor::parse("Do NOT bypass approval process");
+        assert!(
+            claims2.urgency_flags.is_empty(),
+            "do NOT bypass must not flag bypass: {:?}",
+            claims2.urgency_flags
+        );
+
+        let claims3 = HeuristicExtractor::parse("This is an URGENT emergency refund");
+        assert_eq!(claims3.urgency_flags, vec!["urgent", "emergency"]);
+    }
+
+    #[test]
+    fn heuristic_extractor_parses_natural_language_indian_amounts() {
+        let c1 = HeuristicExtractor::parse("refund of five thousand rupees for order #12");
+        assert_eq!(c1.amount_paise, Some(500_000));
+
+        let c2 = HeuristicExtractor::parse("payout of 1 lakh for merchant settlement");
+        assert_eq!(c2.amount_paise, Some(10_000_000));
     }
 }
