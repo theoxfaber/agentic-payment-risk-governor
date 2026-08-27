@@ -7,18 +7,17 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::state::AppState;
+use subtle::ConstantTimeEq;
 
 /// A governor that executes money movement with NO authentication would be
 /// the exact "valid credentials ≠ valid action" gap it exists to close. Every
 /// /v1/* route requires the key; /health and /metrics stay open (liveness +
-/// Prometheus scrape), and the dashboard page carries the server's own key so
-/// it authenticates like any other client.
+/// Prometheus scrape). The dashboard is unauthenticated and carries no secret.
 pub(crate) fn resolve_api_key() -> String {
     let from_env = std::env::var("GOVERNOR_API_KEY").ok().filter(|k| !k.trim().is_empty());
     let key = api_key_from(from_env.clone());
     if from_env.is_none() {
-        tracing::warn!("GOVERNOR_API_KEY not set — generated EPHEMERAL key for this run: {key}");
-        tracing::warn!("set GOVERNOR_API_KEY to pin a stable key across restarts");
+        tracing::warn!("GOVERNOR_API_KEY not set — generated EPHEMERAL key for this run (redacted). Set GOVERNOR_API_KEY to pin a stable key across restarts");
     }
     key
 }
@@ -32,13 +31,10 @@ fn api_key_from(env_value: Option<String>) -> String {
     }
 }
 
-/// Length-independent byte comparison (comparison time does not leak how many
-/// leading bytes of the key matched).
+/// Constant-time comparison via `subtle`. Avoids early return on length
+/// mismatch which leaks key length through timing.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.ct_eq(b).unwrap_u8() == 1
 }
 
 fn authorized(headers: &axum::http::HeaderMap, expected: &str) -> bool {

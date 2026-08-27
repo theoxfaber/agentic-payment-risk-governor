@@ -406,6 +406,20 @@ pub fn validate_request(request: &AgentActionRequest) -> Result<(), ActionServic
             "declared_intent is required".to_string(),
         ));
     }
+    if request.action_type == ActionType::Refund {
+        let pid = request
+            .context
+            .get("payment_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if pid.is_empty() {
+            return Err(ActionServiceError::Validation(
+                "payment_id is required in context for refund actions".to_string(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -424,7 +438,7 @@ mod tests {
             amount: 50_000,
             currency: "INR".into(),
             declared_intent: "refund for order #123".into(),
-            context: serde_json::json!({ "customer_id": "cust_1" }),
+            context: serde_json::json!({ "customer_id": "cust_1", "payment_id": "pay_test_123" }),
             timestamp: now_utc(),
             correlation_id: generate_correlation_id(),
         }

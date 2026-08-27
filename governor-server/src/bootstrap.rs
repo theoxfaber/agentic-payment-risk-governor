@@ -145,7 +145,7 @@ pub(crate) mod test_support {
             amount,
             currency: Some("INR".into()),
             declared_intent: "refund for order #1".into(),
-            context: serde_json::json!({}),
+            context: serde_json::json!({ "payment_id": "pay_test_123" }),
         })
     }
 }

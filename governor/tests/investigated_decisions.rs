@@ -231,7 +231,7 @@ fn request_for(customer: &str) -> AgentActionRequest {
         amount: 50_000,
         currency: "INR".into(),
         declared_intent: "refund order".into(),
-        context: serde_json::json!({ "customer_id": customer }),
+        context: serde_json::json!({ "customer_id": customer, "payment_id": "pay_test_123" }),
         timestamp: now_utc(),
         correlation_id: generate_correlation_id(),
     }
