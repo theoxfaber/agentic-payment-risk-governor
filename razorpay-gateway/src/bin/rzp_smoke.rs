@@ -44,7 +44,10 @@ async fn main() -> anyhow::Result<()> {
         Err(e) if e.to_string().contains("was not found") || e.to_string().contains("404") => {
             println!("   SKIP: legacy /payments/create/json endpoint not found on this API host (deprecated).");
             println!("   Live proof still holds: auth + order creation succeeded against real test-mode API.");
-            println!("\nSMOKE PASS (partial): auth → order {} (live test mode, payment endpoint deprecated)", order_id);
+            println!(
+                "\nSMOKE PASS (partial): auth → order {} (live test mode, payment endpoint deprecated)",
+                order_id
+            );
             println!("   Next: refund path is exercised via HttpGateway's receipt probe + idempotency guard (mocked payment_id).");
             return Ok(());
         }

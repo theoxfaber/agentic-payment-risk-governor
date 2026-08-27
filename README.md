@@ -183,6 +183,10 @@ False positives on 972 legit customers sharing devices/addresses/NAT IPs — inv
 
 Degraded data (missing records, jitter, count noise): recall stays 100% while review share climbs 1% → 72%. Random 140 worlds: 100% precision, 99.4% recall. Stress harness with camouflaged abusers validates the conformal budgets at `z < 1` over 12 runs. Full method in [docs/AI_DESIGN.md](docs/AI_DESIGN.md).
 
+<p align="center">
+  <img src="docs/eval-results.svg" alt="Held-out precision/recall — investigation & learned models 100%/100% at zero FP cost vs per-customer 66% recall and clustering 51% precision" width="920" />
+</p>
+
 ---
 
 ## Verification & Adversarial Harness
