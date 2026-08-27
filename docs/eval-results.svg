@@ -70,11 +70,11 @@
   <rect x="765" y="22" width="12" height="12" fill="#cf222e" rx="2"/>
   <text x="782" y="32" font-size="11" fill="#57606a">FN cost</text>
 
-  <!-- scale: 240px = ₹210K -->
-  <!-- group 1: rules only — prevented 166950→191, fp 0, fn 36000→41 -->
-  <rect x="512" y="119" width="28" height="191" fill="#1a7f37" rx="3"/>
+  <!-- scale: 240px = ₹210K — updated from 2026-08-28 held-out run -->
+  <!-- group 1: rules only — prevented 168300→192, fp 0, fn 34650→40 -->
+  <rect x="512" y="118" width="28" height="192" fill="#1a7f37" rx="3"/>
   <rect x="546" y="308" width="28" height="2"   fill="#bf8700" rx="1"/>
-  <rect x="580" y="269" width="28" height="41"  fill="#cf222e" rx="3"/>
+  <rect x="580" y="270" width="28" height="40"  fill="#cf222e" rx="3"/>
   <!-- group 2: clustering only — prevented 202950→232, fp 65925→75, fn 0 -->
   <rect x="637" y="78"  width="28" height="232" fill="#1a7f37" rx="3"/>
   <rect x="671" y="235" width="28" height="75"  fill="#bf8700" rx="3"/>
@@ -84,10 +84,10 @@
   <rect x="796" y="308" width="28" height="2"   fill="#bf8700" rx="1"/>
   <rect x="830" y="308" width="28" height="2"   fill="#cf222e" rx="1"/>
 
-  <!-- value labels -->
+  <!-- value labels — updated 2026-08-28 -->
   <g font-size="10" fill="#24292f" text-anchor="middle">
-    <text x="526" y="112">₹167K</text>
-    <text x="594" y="262">₹36K</text>
+    <text x="526" y="111">₹168K</text>
+    <text x="594" y="263">₹34.6K</text>
     <text x="651" y="71" font-weight="700">₹203K</text>
     <text x="685" y="228">₹66K FP</text>
     <text x="776" y="71" font-weight="700" fill="#1a7f37">₹203K</text>
