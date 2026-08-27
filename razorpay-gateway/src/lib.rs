@@ -49,6 +49,24 @@ impl HttpGateway {
         self
     }
 
+    /// Deterministic idempotency key: `rfnd_{payment_id}_{decision_id}` for refunds,
+    /// `pout_{merchant}_{decision_id}` for payouts, generic fallback for others.
+    /// Razorpay server-side dedup guarantees identical keys never double-charge
+    /// even across retries; decision_id makes the key stable for this decision
+    /// but unique across decisions. Logged in audit trail for replay.
+    pub fn deterministic_idempotency_key(request: &AgentActionRequest, decision_id: Uuid) -> String {
+        let ctx_payment = request
+            .context
+            .get("payment_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        match request.action_type {
+            ActionType::Refund => format!("rfnd_{}_{}", ctx_payment, decision_id),
+            ActionType::Payout => format!("pout_{}_{}", request.merchant_id, decision_id),
+            _ => format!("{:?}_{}_{}", request.action_type, request.merchant_id, decision_id).to_lowercase(),
+        }
+    }
+
     /// POST with basic auth + 429/5xx retry (exponential backoff, honors
     /// Retry-After). Live APIs rate-limit; a demo that dies on the first 429
     /// is not production-ready.
@@ -57,13 +75,26 @@ impl HttpGateway {
         url: &str,
         body: &serde_json::Value,
     ) -> Result<(reqwest::StatusCode, serde_json::Value), ActionServiceError> {
+        self.post_with_retry_idempotent(url, body, None).await
+    }
+
+    async fn post_with_retry_idempotent(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        idempotency_key: Option<&str>,
+    ) -> Result<(reqwest::StatusCode, serde_json::Value), ActionServiceError> {
         let mut attempt = 0u32;
         loop {
-            let resp = self
+            let mut req = self
                 .http
                 .post(url)
                 .basic_auth(&self.key_id, Some(&self.key_secret))
-                .json(body)
+                .json(body);
+            if let Some(key) = idempotency_key {
+                req = req.header("Idempotency-Key", key).header("X-Idempotency-Key", key);
+            }
+            let resp = req
                 .send()
                 .await
                 .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string()))?;
@@ -268,15 +299,20 @@ impl RazorpayGateway for HttpGateway {
             return Ok(cached.clone());
         }
 
+        let idempotency_key = Self::deterministic_idempotency_key(request, decision_id);
+        tracing::info!(?decision_id, %idempotency_key, action=?request.action_type, "razorpay execution with idempotency key");
+
         let result = match request.action_type {
             ActionType::Refund => self.execute_refund(request, decision_id).await,
             _ => {
                 let (url, body) = self.endpoint_for(request);
-                self.post_with_retry(&url, &body).await.and_then(|(status, payload)| {
-                    ensure_success(status, &payload)?;
-                    tracing::info!(?decision_id, %status, "razorpay call succeeded");
-                    Ok(payload)
-                })
+                self.post_with_retry_idempotent(&url, &body, Some(&idempotency_key))
+                    .await
+                    .and_then(|(status, payload)| {
+                        ensure_success(status, &payload)?;
+                        tracing::info!(?decision_id, %status, %idempotency_key, "razorpay call succeeded");
+                        Ok(payload)
+                    })
             }
         };
 
@@ -312,6 +348,7 @@ impl HttpGateway {
         // probe EXACT: we match our own receipt, not merely a same-amount
         // refund some other flow may legitimately have created.
         let receipt = decision_id.to_string();
+        let idempotency_key = Self::deterministic_idempotency_key(request, decision_id);
         let body = json!({ "amount": request.amount, "speed": "normal", "receipt": receipt });
 
         let mut attempt = 0u32;
@@ -320,6 +357,8 @@ impl HttpGateway {
                 .http
                 .post(&url)
                 .basic_auth(&self.key_id, Some(&self.key_secret))
+                .header("Idempotency-Key", &idempotency_key)
+                .header("X-Idempotency-Key", &idempotency_key)
                 .json(&body)
                 .send()
                 .await

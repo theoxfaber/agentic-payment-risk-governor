@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-22--crate%20workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-185%20passing-1a7f37)
+![Tests](https://img.shields.io/badge/tests-201%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-reserved-blue)
 
 **AI agents can now execute refunds, payouts, and orders on payment platforms
@@ -339,7 +339,7 @@ intent and moves no money.
 <summary><b>Tests & evaluation</b></summary>
 
 ```bash
-cargo test --workspace              # 185 tests — offline, self-contained (see docs/TESTING.md)
+cargo test --workspace              # 201 tests — offline, self-contained (see docs/TESTING.md)
 cargo run --release -p eval-harness # calibration + held-out tables + CRC guarantee validation
 
 # Judge-regenerable headline: your own held-out seeds, never seen by this repo

@@ -151,6 +151,31 @@ const PAGE_TEMPLATE: &str = r#"<!DOCTYPE html>
       <tr><td colspan="7" class="empty">waiting for actions… submit one via POST /v1/actions</td></tr>
     </tbody>
   </table>
+
+  <section id="demo" style="margin-top:28px;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px 20px">
+    <h3 style="margin:0 0 8px;font-size:13px;letter-spacing:0.05em;text-transform:uppercase;color:var(--dim)">Demo Console — Verify Invariants Live</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px">
+      <div>
+        <strong>1. ALLOW</strong> <span class="mono">amount 5000 paise</span><br>
+        <span class="mono" style="color:var(--dim)">curl -H 'X-API-Key: $KEY' -d '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001","action_type":"refund","amount":5000,"declared_intent":"refund order #1","context":{"payment_id":"pay_test","payment_state":"captured","captured_paise":100000}}' $URL/v1/actions</span><br>
+        → <span class="badge allow">allow</span> + gateway execution, audit hash chained
+      </div>
+      <div>
+        <strong>2. Idempotency</strong> replay same <span class="mono">decision_id</span><br>
+        <span class="mono" style="color:var(--dim)">Idempotency-Key: rfnd_{payment_id}_{decision_id}</span><br>
+        → 2nd call returns cached <span class="mono">rfnd_mock_*</span>, <span class="badge block">no 2nd charge</span>. See <span class="mono">/metrics</span> `gateway_executions_total`
+      </div>
+      <div>
+        <strong>3. BLOCK</strong> <span class="mono">captured 100000, refunded 0, request 200000</span><br>
+        → <span class="badge block">block</span> `refund exceeds available balance` — integer paise check
+      </div>
+      <div>
+        <strong>4. Race</strong> 8x concurrent <span class="mono">/approve</span> on same REVIEW<br>
+        → exactly 1 succeeds, audit shows claim-under-lock. Run: <span class="mono">cargo test concurrent_approvals_execute_exactly_once -- --nocapture</span>
+      </div>
+    </div>
+    <div id="lock-hint" style="margin-top:10px;color:var(--dim);font-size:12px">Tip: open <a href="/metrics" style="color:var(--text)">/metrics</a> to see <span class="mono">risk_governor_decisions_total</span> and <span class="mono">gateway_executions_total</span> — executions must never exceed allows.</div>
+  </section>
 </main>
 
 <div id="detail"><div class="sheet" id="sheet"></div></div>

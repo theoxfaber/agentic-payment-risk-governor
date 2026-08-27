@@ -27,9 +27,50 @@ impl PolicyEngine {
 
         let policy = &evidence.merchant_policy;
 
-        // Check amount thresholds
+        // Check amount thresholds — all amounts are integer paise (i64), no floats
         match request.action_type {
             ActionType::Refund => {
+                if request.amount <= 0 {
+                    violated_thresholds.push(format!(
+                        "refund amount {} must be positive integer paise",
+                        request.amount
+                    ));
+                }
+                // Payment state gate: refunds require a captured payment
+                if let Some(state) = request
+                    .context
+                    .get("payment_state")
+                    .or_else(|| request.context.get("paymentStatus"))
+                    .or_else(|| request.context.get("payment_status"))
+                    .and_then(|v| v.as_str())
+                {
+                    let s = state.to_ascii_lowercase();
+                    if s != "captured" {
+                        violated_thresholds.push(format!(
+                            "payment state '{}' is not captured — refund requires captured",
+                            state
+                        ));
+                    }
+                }
+                // Integer paise balance check: refund <= captured - refunded
+                let captured = Self::extract_paise(
+                    &request.context,
+                    &["captured_paise", "captured_amount", "amount_captured"],
+                );
+                let refunded = Self::extract_paise(
+                    &request.context,
+                    &["refunded_paise", "refunded_amount", "amount_refunded"],
+                )
+                .unwrap_or(0);
+                if let Some(cap) = captured {
+                    let available = cap.saturating_sub(refunded);
+                    if request.amount > available {
+                        violated_thresholds.push(format!(
+                            "refund amount {} exceeds available balance {} (captured {} - refunded {})",
+                            request.amount, available, cap, refunded
+                        ));
+                    }
+                }
                 if request.amount > policy.max_refund_amount {
                     violated_thresholds.push(format!(
                         "refund amount {} exceeds max {}",
@@ -112,6 +153,31 @@ impl PolicyEngine {
             violated_thresholds,
             evaluated_at: now_utc(),
         })
+    }
+
+    fn extract_paise(ctx: &serde_json::Value, keys: &[&str]) -> Option<i64> {
+        for k in keys {
+            if let Some(v) = ctx.get(*k) {
+                if let Some(n) = v.as_i64() {
+                    return Some(n);
+                }
+                if let Some(s) = v.as_str() {
+                    if let Ok(n) = s.parse::<i64>() {
+                        return Some(n);
+                    }
+                }
+                if let Some(n) = v.as_u64() {
+                    return Some(n as i64);
+                }
+            }
+            // support nested payment object: context.payment.amount etc
+            if let Some(obj) = ctx.get("payment").and_then(|p| p.get(*k)) {
+                if let Some(n) = obj.as_i64() {
+                    return Some(n);
+                }
+            }
+        }
+        None
     }
 
     fn evaluate_custom_rule(
