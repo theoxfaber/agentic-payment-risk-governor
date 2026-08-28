@@ -67,7 +67,7 @@ All checks are integer-arithmetic and constant-time where applicable.
 | --- | --- | --- |
 | Zero credential exposure — upstream secret never leaves governor; dashboard carries no key | `governor-server` holds `RAZORPAY_KEY_SECRET`; dashboard unauthenticated | `dashboard::tests` |
 | Integer paise — amounts are positive `i64` paise; floats rejected at validation (`400`) | `action-service::validate_request` | `policy-engine` |
-| Balance bound — refund requires `payment_state == "captured"` and `amount ≤ captured − refunded` (checked subtraction) | `policy-engine::evaluate` | `policy-engine`, `governor/tests/financial_invariants.rs` |
+| Balance bound — refund requires `payment_state == "captured"` and `amount ≤ captured − refunded` (checked subtraction); **missing `payment_state` or `captured_paise` fails closed (BLOCK)** — an omitted field cannot bypass the invariant | `policy-engine::evaluate` (fail-closed) | `policy-engine` (`missing_payment_state_fails_closed`, `missing_captured_paise_fails_closed`), `governor/tests/financial_invariants.rs` |
 | At-most-once — `rfnd_{payment_id}_{decision_id}` / `pout_{merchant}_{decision_id}` as `Idempotency-Key`; per-`decision_id` execution cache | `razorpay-gateway::HttpGateway::execute` | `razorpay-gateway::tests`, `governor/tests/test_adversarial_concurrency.rs` |
 | Tamper-evident log — canonical JSON (sorted keys) → `SHA-256(previous_hash ‖ record)` chain; `deny_unknown_fields` | `risk-governor-types::canonical_json_bytes` | `audit-service::tests` |
 | Constant-time auth — `subtle::ConstantTimeEq` | `governor-server/src/auth.rs` | `governor-server::tests` |

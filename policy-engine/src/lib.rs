@@ -36,23 +36,23 @@ impl PolicyEngine {
                         request.amount
                     ));
                 }
-                // Payment state gate: refunds require a captured payment
-                if let Some(state) = request
+                // Payment state gate: refunds require a captured payment — fail-closed if missing
+                match request
                     .context
                     .get("payment_state")
                     .or_else(|| request.context.get("paymentStatus"))
                     .or_else(|| request.context.get("payment_status"))
                     .and_then(|v| v.as_str())
                 {
-                    let s = state.to_ascii_lowercase();
-                    if s != "captured" {
-                        violated_thresholds.push(format!(
-                            "payment state '{}' is not captured — refund requires captured",
-                            state
-                        ));
-                    }
+                    Some(state) if state.to_ascii_lowercase() == "captured" => {}
+                    Some(state) => violated_thresholds.push(format!(
+                        "payment state '{}' is not captured — refund requires captured",
+                        state
+                    )),
+                    None => violated_thresholds
+                        .push("missing payment_state — refund requires captured (fail-closed)".into()),
                 }
-                // Integer paise balance check: refund <= captured - refunded
+                // Integer paise balance check: refund <= captured - refunded — fail-closed if captured missing
                 let captured = Self::extract_paise(
                     &request.context,
                     &["captured_paise", "captured_amount", "amount_captured"],
@@ -62,14 +62,18 @@ impl PolicyEngine {
                     &["refunded_paise", "refunded_amount", "amount_refunded"],
                 )
                 .unwrap_or(0);
-                if let Some(cap) = captured {
-                    let available = cap.saturating_sub(refunded);
-                    if request.amount > available {
-                        violated_thresholds.push(format!(
-                            "refund amount {} exceeds available balance {} (captured {} - refunded {})",
-                            request.amount, available, cap, refunded
-                        ));
+                match captured {
+                    Some(cap) => {
+                        let available = cap.saturating_sub(refunded);
+                        if request.amount > available {
+                            violated_thresholds.push(format!(
+                                "refund amount {} exceeds available balance {} (captured {} - refunded {})",
+                                request.amount, available, cap, refunded
+                            ));
+                        }
                     }
+                    None => violated_thresholds
+                        .push("missing captured_paise — refund requires captured amount (fail-closed)".into()),
                 }
                 if request.amount > policy.max_refund_amount {
                     violated_thresholds.push(format!(
@@ -301,6 +305,14 @@ mod tests {
     }
 
     fn request(action: ActionType, amount: i64) -> AgentActionRequest {
+        let ctx = match action {
+            ActionType::Refund => serde_json::json!({
+                "payment_state": "captured",
+                "captured_paise": 500000,
+                "refunded_paise": 0
+            }),
+            _ => serde_json::json!({}),
+        };
         AgentActionRequest {
             agent_id: "agent-01".into(),
             merchant_id: "merchant-001".into(),
@@ -308,7 +320,7 @@ mod tests {
             amount,
             currency: "INR".into(),
             declared_intent: "refund for order #1".into(),
-            context: serde_json::json!({}),
+            context: ctx,
             timestamp: now_utc(),
             correlation_id: generate_correlation_id(),
         }
@@ -453,5 +465,29 @@ mod tests {
             .unwrap();
         assert_eq!(r.verdict, PolicyVerdict::Block);
         assert!(r.violated_thresholds[0].contains("agent anomaly: rapid_fire"));
+    }
+
+    #[tokio::test]
+    async fn missing_payment_state_fails_closed() {
+        let mut req = request(ActionType::Refund, 10_000);
+        req.context = serde_json::json!({ "captured_paise": 500000 });
+        let r = engine().evaluate(&req, &evidence(policy())).await.unwrap();
+        assert_eq!(r.verdict, PolicyVerdict::Block);
+        assert!(r
+            .violated_thresholds
+            .iter()
+            .any(|t| t.contains("missing payment_state")));
+    }
+
+    #[tokio::test]
+    async fn missing_captured_paise_fails_closed() {
+        let mut req = request(ActionType::Refund, 10_000);
+        req.context = serde_json::json!({ "payment_state": "captured" });
+        let r = engine().evaluate(&req, &evidence(policy())).await.unwrap();
+        assert_eq!(r.verdict, PolicyVerdict::Block);
+        assert!(r
+            .violated_thresholds
+            .iter()
+            .any(|t| t.contains("missing captured_paise")));
     }
 }
