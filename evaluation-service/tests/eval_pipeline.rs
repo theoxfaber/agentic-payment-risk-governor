@@ -17,7 +17,7 @@ fn case(id: &str, scenario: &str, amount: i64, intent: &str, expected: DecisionO
             amount,
             currency: "INR".into(),
             declared_intent: intent.into(),
-            context: serde_json::json!({ "payment_id": "pay_test_123" }),
+            context: serde_json::json!({ "payment_id": "pay_test_123", "payment_state": "captured", "captured_paise": 500000, "refunded_paise": 0 }),
             timestamp: now_utc(),
             correlation_id: generate_correlation_id(),
         },
