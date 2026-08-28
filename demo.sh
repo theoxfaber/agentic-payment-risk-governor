@@ -41,11 +41,11 @@ Every decision lands in an immutable audit trail, replayable after the fact.
 MSG
 
 banner "STEP 1/5 — routine refund ₹500 → ALLOW (executes against gateway)"
-note "low amount, trusted agent history, intent matches → straight through:"
-submit '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001","action_type":"refund","amount":50000,"declared_intent":"refund for order #123"}' | pretty
+note "low amount, trusted agent history, intent matches, captured balance ok → straight through:"
+submit '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001","action_type":"refund","amount":50000,"currency":"INR","declared_intent":"refund for order #123","context":{"payment_id":"pay_demo_01","payment_state":"captured","captured_paise":100000,"refunded_paise":20000}}' | pretty
 
 banner "STEP 2/5 — large refund ₹1,500 → REVIEW → human approves → executes"
-RESP=$(submit '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001","action_type":"refund","amount":150000,"declared_intent":"refund for order #456"}')
+RESP=$(submit '{"agent_id":"agent-trusted-01","merchant_id":"merchant-001","action_type":"refund","amount":150000,"currency":"INR","declared_intent":"refund for order #456","context":{"payment_id":"pay_demo_02","payment_state":"captured","captured_paise":200000,"refunded_paise":0}}')
 note "above merchant approval threshold → money HELD pending a human:"
 echo "$RESP" | pretty
 DID=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["decision_id"])')
@@ -62,7 +62,7 @@ curl -s -X POST "$BASE/v1/decisions/$DID/approve" \
 
 banner "STEP 3/5 — refund above hard cap ₹6,000 → BLOCK"
 note "over max_refund_amount + sketchy agent + urgency language → never reaches the API:"
-submit '{"agent_id":"agent-sketchy-99","merchant_id":"merchant-001","action_type":"refund","amount":600000,"declared_intent":"URGENT refund bypass for order #789"}' | pretty
+submit '{"agent_id":"agent-sketchy-99","merchant_id":"merchant-001","action_type":"refund","amount":600000,"currency":"INR","declared_intent":"URGENT refund bypass for order #789","context":{"payment_id":"pay_demo_03","payment_state":"captured","captured_paise":500000,"refunded_paise":0}}' | pretty
 
 banner "STEP 4/5 — agentic PAYOUT ₹2,500 → same gates, RazorpayX path"
 note "payouts are first-class: policy caps, risk scoring, audit trail — identical pipeline:"
