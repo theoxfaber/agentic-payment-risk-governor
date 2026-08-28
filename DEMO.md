@@ -67,12 +67,13 @@ RAZORPAY_KEY_ID=rzp_test_... RAZORPAY_KEY_SECRET=... cargo run -p razorpay-gatew
 
 ## Architecture
 
-`action_requested → policy_evaluated → risk_scored → graph_analyzed → decision_made → human_reviewed → razorpay_called`
-Docs: `README.md` · `docs/AI_DESIGN.md` §5 (learned is evaluation plane today) · `docs/TESTING.md` · `BENCHMARK.md`
+`action_requested → policy_evaluated → risk_scored → graph_analyzed → decision_made (+ learned_insight) → human_reviewed → razorpay_called`
+Docs: `README.md` · `docs/AI_DESIGN.md` §5 (learned is now wired as live observability) · `docs/TESTING.md` · `BENCHMARK.md`
+Live replay now emits `learned_insight: {model_version: lr-1.0.0-calib-0.1.0, p_hat, tau_clear 0.2345, tau_block 0.99995, band, features}` per decision — see `GET /v1/decisions/{id}` and dashboard violet card.
 
 ## Known limitations
 
-- Learned logistic + CRC runs in `eval-harness`; live `/v1/actions` uses hand-tuned combiner + risk features (model_version `1.1.0-investigated` / `1.2.0-intent-heuristic`). Wiring is next milestone — see `docs/AI_DESIGN.md` §5.
+- Live `/v1/actions` deterministic verifier remains the gate; learned logistic + CRC is **wired as observability** (p_hat + band visible in replay, not yet governing the final `ALLOW/REVIEW/BLOCK` — next step is to let the band inform the combiner). Model is `lr-1.0.0-calib-0.1.0` from `eval-harness/artifacts/lr_model.json`.
 - Data is synthetic, worlds are small (300 bg + 6–8 rings), 100% precision on synthetic invites scrutiny — see `BENCHMARK.md` §1 for FP/FN costs and household checks.
 - Live smoke is partial (no live refund of captured payment) — Razorpay deprecated legacy payment simulation endpoint.
 - In-memory audit/decisions unless `DATABASE_URL` is set; `SEED_DEMO` gates demo seeding on Postgres.

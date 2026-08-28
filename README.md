@@ -1,6 +1,6 @@
 # Agentic Payment Risk Governor
 
-**Defense-only verifier for autonomous refund abuse.** Agent-initiated refunds are checked for bounded, auditable, at-most-once execution before they can reach Razorpay. Live `/v1/actions` is the deterministic verifier + risk features; learned logistic + conformal is the **evaluation plane** today (see `docs/AI_DESIGN.md` §5) — synthetic data proves the machinery, not production fraud performance.
+**Defense-only verifier for autonomous refund abuse.** Agent-initiated refunds are checked for bounded, auditable, at-most-once execution before they can reach Razorpay. Live `/v1/actions` is the deterministic verifier + risk features **with learned logistic + conformal emitted as observability** (`learned_insight: {model_version, p_hat, tau_clear/block, band, features}` per decision, from `eval-harness/artifacts/lr_model.json`) — see replay `GET /v1/decisions/{id}` and dashboard violet card. Synthetic held-out data proves the machinery (see `docs/AI_DESIGN.md` §5).
 
 Execution proxy and policy governor (Rust) that isolates Razorpay credentials from autonomous agents and enforces deterministic financial invariants before money moves. Run `DEMO.md` for the 10-minute judge path.
 
