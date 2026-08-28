@@ -5,7 +5,7 @@ credentials, no Postgres, no NATS, no LLM API keys. A fresh clone needs only
 a Rust toolchain:
 
 ```bash
-cargo test --workspace        # 184 tests, all green, zero environment setup
+cargo test --workspace        # 201 tests, all green, zero environment setup
 ```
 
 ## Test inventory by crate
@@ -31,12 +31,12 @@ attributed to their crate):
 | `evaluation-service` | 4 | Labeled-dataset pipeline with cost accounting |
 | `dataset-gen` | 6 | Adversarial world generators produce non-degenerate fixtures; label-free trimmed baseline estimation |
 | `governor` | 8 | End-to-end pipeline scenarios incl. investigated decisions; chaos/distributed suites are `#[ignore]`-tagged (need live infra) |
-| `dashboard` | 3 | **Page carries no credential**, auth-header wiring, escaped id interpolation |
 | `risk-governor-replay` | 3 | Decision reconstruction from audit trail |
 | `risk-governor-correlation` | 6 | Correlation-ID task-local scoping across bus calls |
 | `pg-store` | 2 | Seed JSON parsing (live-DB paths are `#[ignore]`-tagged) |
+| `dashboard-v2` | — | Vite + React triage console (proxies to same /v1/* + /metrics, tested via build) |
 
-**Total: 184.**
+**Total: 201** (Rust workspace) + dashboard-v2 build.
 
 ## Which tests touch external infrastructure
 

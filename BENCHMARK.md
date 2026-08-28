@@ -1,70 +1,55 @@
-# Quantitative Economic Evaluation Benchmark
+# Benchmark — Canonical Held-Out Evaluation
 
-This benchmark provides held-out statistical verification of the **Agentic Payment Risk Governor** across three independent, deterministic random seeds (`[31415, 27182, 16180]`). 
+> **Source of truth:** `cargo run --release -p eval-harness` (or `EVAL_HELDOUT_SEEDS=...` for externally supplied seeds). Numbers below are generated from `docs/EVAL_REPORT_2026-08-28.md` — do not edit manually. Data is **synthetic** (proves the train → calibrate → guarantee → monitor machinery, not production fraud performance).
 
-All evaluations measure empirical financial performance against realistic payment transaction distributions (incorporating merchant interchange, fraud losses, customer friction churn, and bank retry penalties).
-
----
-
-## 1. Economic Evaluation Formulation
-
-Net Recovered Value ($V_{\text{net}}$) is formulated as:
-
-$$V_{\text{net}} = \sum_{t=1}^{N} \Big( \text{FraudPrevented}_t - \text{FrictionCost}_t - \text{GatewayRetryFees}_t - \text{InterchangeLeakage}_t \Big)$$
-
-Where:
-- $\text{FraudPrevented}_t$: Actual fraudulent transaction volume blocked ($\text{Amount}_t + \text{ChargebackPenalty}_{\text{₹1,500}}$).
-- $\text{FrictionCost}_t$: Legitimate user drop-off caused by unnecessary 3DS/OTP challenge ($0.15 \times \text{Amount}_t$).
-- $\text{GatewayRetryFees}_t$: Surcharges incurred by retrying dead issuer rails ($\text{₹12.50} \text{ per retry}$).
-- $\text{InterchangeLeakage}_t$: Direct capital loss when a fraudulent transaction passes ($1.00 \times \text{Amount}_t$).
+**Calibration:** seed `2026` only. **Held-out:** seeds `31415`, `27182`, `16180` (never seen during tuning). Worlds: `normal`, `household`, `coincidental_sharing`, `return_abuse`, `refund_abuse`, `distributed_ring`, `merchant_collusion`, `adversarial_evasion` (300 background customers + 6–8 abuse rings per world).
 
 ---
 
-## 2. Benchmark Comparison (10,000 Held-Out Transactions Per Seed)
+## 1. Held-out aggregate (abuse worlds, 3 seeds)
 
-| Metric | Un-governed LLM Agent (Tool-Calling) | Static Heuristic Rules | **Agentic Risk Governor (Ours)** |
-| :--- | :--- | :--- | :--- |
-| **Net Recovered Value ($V_{\text{net}}$)** | -₹1,842,400 *(Loss due to hallucinated retries)* | +₹3,120,500 | **+₹8,492,150** |
-| **Fraud Catch Rate (Recall)** | 78.4% | 61.2% | **98.6%** |
-| **False Positive / Friction Rate** | 22.1% *(Severe merchant churn)* | 14.8% | **1.8%** |
-| **Double-Execution Invariant Violations** | 14 occurrences (Race conditions) | 0 | **0 (Zero Defect)** |
-| **P99 Decision Latency** | 3,420 ms | **4 ms** | **42 ms** *(Cached: 1.2 ms)* |
-| **Conformal Risk Bound ($\alpha_{\text{leak}} \le 2\%$)** | Violated (21.6% leakage) | Violated (38.8% leakage) | **Guaranteed ($\hat{\alpha} = 1.40\%$)** |
+| Approach | Precision | Recall | FP cost | FN cost | Prevented |
+|---|---:|---:|---:|---:|---:|
+| Per-customer rate | 100% | 66% | ₹0 | ₹34,650 | ₹1,68,300 |
+| Clustering only | 51% | 100% | ₹65,925 | ₹0 | ₹2,02,950 |
+| **Investigation engine** | **100%** | **100%** | **₹0** | **₹0** | **₹2,02,950** |
+| Learned logistic (Rust) | 100% | 100% | ₹0 | ₹0 | ₹2,02,950 |
+| LR + conformal economics (`p̂×exposure ≤ ₹400`, fraud-leak ≤2%, friction ≤1%) | 100% | 94% | ₹0 | ₹1,350 | ₹2,01,600 |
 
----
+`LR + conformal` concedes ₹1,350 vs investigation engine — cheaper than spending ₹400 of reviewer time to prevent ₹13.50 exposures per instance. Chart: `docs/eval-results.svg`.
 
-## 3. Multi-Seed Stability & Variance Analysis
-
-| Seed Identifier | Sample Size | Fraud Volume | Recovered Value | Friction Penalty | Effective Catch Rate |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `Seed 31415` | 10,000 | ₹12,450,000 | +₹8,410,200 | ₹112,400 | 98.4% |
-| `Seed 27182` | 10,000 | ₹11,980,000 | +₹8,540,100 | ₹98,200 | 98.8% |
-| `Seed 16180` | 10,000 | ₹13,100,000 | +₹8,526,150 | ₹104,800 | 98.6% |
-| **Mean $\pm$ Std** | **10,000** | **₹12,510,000** | **+₹8,492,150 $\pm$ ₹69k** | **₹105,133 $\pm$ ₹7k** | **98.60% $\pm$ 0.20%** |
+Household false-positive check (972 legitimate customers across 3 held-out seeds sharing devices/addresses/NAT IPs): investigation, learned, and calibrated each flag **0 of 972** (clustering flags 72, per-customer flags 3).
 
 ---
 
-## 4. Telemetry Degradation & Adversarial Stress Tests
+## 2. Robustness
 
-To evaluate robustness under real-world network degradations, synthetic perturbations were applied to held-out test streams:
+**Degradation sweep (held-out):** missing records + jitter + count noise → recall stays **100%**, review share **1.1% → 35.6% (mild) → 58.9% (heavy)**, legit flagged `0 → 0 → 14 of 1507`. Degradation correctly routes to humans.
 
-```
-[STRESS TEST: Telemetry Noise & Clock Drift]
-├── Missing Device Fingerprint:  Governor gracefully routes to Step-Up OTP (Recall maintained at 97.9%)
-├── 5000ms Clock Skew Injection: Timestamp validation rejects replay attacks; falls back to monotonic lease check
-├── 5xx Upstream Bank Outage:    Circuit breaker trips; routes to alternate UPI/Card rail (0 dropouts)
-└── 10-Thread Concurrent Race:   Idempotency lock prevents double mutation; exactly 1 charge executed
+**Randomized worlds (140 worlds, parameters never tuned against):** investigation engine `100.0%` precision, `99.4%` recall, `0` legit customers flagged.
+
+**Camouflaged abusers (forced overlap, 12 runs, 2616 customers):** CRC budgets hold — leaked `44 vs 52` (`z=-1.16`), blocked-legit `31 vs 26` (`z=0.95`), worst-run leak `3.21%` friction `2.75%`, mean review share `36.5%`, `tau_clear` collapses `0.23 → ~0.04` (designed conservative response), mean PSI `0.98`.
+
+---
+
+## 3. Reproduce
+
+```bash
+cargo run --release -p eval-harness
+EVAL_HELDOUT_SEEDS=12345,67890 cargo run --release -p eval-harness
+cat docs/EVAL_REPORT_2026-08-28.md
 ```
 
+Regenerates `docs/eval-results.svg` + `eval-harness/artifacts/lr_model.json`. Previous `BENCHMARK.md` tables with 10k/seed and ₹8.49M were from an earlier synthetic scale and are archived — current canonical surface is the held-out report above.
+
 ---
 
-## 5. Formal Conformal Risk Control (CRC) Verification
+## 4. Live gateway (separate from synthetic)
 
-Using Split-Conformal Calibration with bounded loss functions ($L_i \in [0, 1]$):
+Test-mode smoke `2026-08-28T04:27 IST` with `rzp_test_TUxx…`: `GET /payments?count=1` auth OK, `POST /orders` created `order_TUyv0Ib1swX7ki` live. `POST /payments/create/json` returned `404` (deprecated on current Razorpay host) — smoke treats as partial pass; refund path is covered by `HttpGateway` idempotency + receipt-probe tests (`cargo test -p razorpay-gateway`). Not a live refund of a captured payment.
 
-$$\hat{\lambda} = \inf \left\{ \lambda : \frac{1}{n+1} \sum_{i=1}^{n} L_i(\lambda) + \frac{B}{n+1} \le \alpha \right\}$$
+---
 
-- **Target Maximum Fraud Leakage ($\alpha_{\text{leak}}$)**: $\le 2.00\%$
-- **Empirical Held-Out Leakage**: **$1.40\%$** *(Statistically bounded with $1 - \delta = 99\%$ confidence)*
-- **Target Maximum Friction Drop ($\alpha_{\text{friction}}$)**: $\le 2.50\%$
-- **Empirical Held-Out Friction**: **$1.82\%$**
+## 5. Production safety (not a benchmark)
+
+P50 `0.42 ms`, P99 `1.18 ms` (incl. SHA-256 chain), `12,500 req/s` single-core, `~18 MB` RSS. Invariants: integer paise, `captured` gate + `captured−refunded` checked subtraction, `rfnd_{payment_id}_{decision_id}` idempotency, `previous_hash→current_hash` chain, `subtle::ct_eq`, claim-under-lock 8-way race → 1 execution.

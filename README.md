@@ -1,6 +1,8 @@
 # Agentic Payment Risk Governor
 
-Execution proxy and policy governor (Rust) that isolates Razorpay credentials from autonomous agents and enforces deterministic financial invariants before money moves.
+**Defense-only verifier for autonomous refund abuse.** Agent-initiated refunds are checked for bounded, auditable, at-most-once execution before they can reach Razorpay. Live `/v1/actions` is the deterministic verifier + risk features; learned logistic + conformal is the **evaluation plane** today (see `docs/AI_DESIGN.md` §5) — synthetic data proves the machinery, not production fraud performance.
+
+Execution proxy and policy governor (Rust) that isolates Razorpay credentials from autonomous agents and enforces deterministic financial invariants before money moves. Run `DEMO.md` for the 10-minute judge path.
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-workspace-dea584?logo=rust)
@@ -211,9 +213,9 @@ cargo test --test test_adversarial_concurrency -- --nocapture
 
 Coverage gate: `cargo llvm-cov --workspace --fail-under-lines 60` (enforced in CI).
 
-### 3. Held-out evaluation (synthetic)
+### 3. Held-out evaluation (synthetic — machinery check, not production claim)
 
-Thresholds are tuned on calibration worlds (seed `2026`) only. Numbers below are measured on three held-out seeds (`31415`, `27182`, `16180`) never seen during development. This is a machinery check (train → calibrate → guarantee → monitor), not a production performance claim.
+Thresholds are tuned on calibration worlds (seed `2026`) only. Numbers below are measured on three held-out seeds (`31415`, `27182`, `16180`) never seen during development. **Source of truth is `cargo run --release -p eval-harness` / `docs/EVAL_REPORT_2026-08-28.md` / `BENCHMARK.md`;** stale `BENCHMARK.md` tables with 10k/seed and ₹8.49M were archived. See `DEMO.md` for the canonical command.
 
 | Approach | Precision | Recall | FP cost | FN cost | Prevented |
 | --- | --- | --- | --- | --- | --- |
