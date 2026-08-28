@@ -62,7 +62,7 @@ fn refund(agent: &str, amount: i64, intent: &str) -> AgentActionRequest {
         amount,
         currency: "INR".into(),
         declared_intent: intent.into(),
-        context: serde_json::json!({ "payment_id": "pay_X", "customer_id": "c1" }),
+        context: serde_json::json!({ "payment_id": "pay_X", "customer_id": "c1", "payment_state": "captured", "captured_paise": 500000, "refunded_paise": 0 }),
         timestamp: now_utc(),
         correlation_id: generate_correlation_id(),
     }

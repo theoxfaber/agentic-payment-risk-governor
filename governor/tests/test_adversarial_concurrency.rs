@@ -313,7 +313,7 @@ async fn test_10_thread_concurrent_action_submission_race() {
                 amount: 15_000,
                 currency: "INR".into(),
                 declared_intent: "Customer returned product intact within policy window".into(),
-                context: serde_json::json!({ "customer_id": "cust_race_99", "payment_id": "pay_test_123" }),
+                context: serde_json::json!({ "customer_id": "cust_race_99", "payment_id": "pay_test_123", "payment_state": "captured", "captured_paise": 500000, "refunded_paise": 0 }),
                 timestamp: now_utc(),
                 correlation_id: cid,
             };
@@ -347,7 +347,7 @@ async fn test_10_thread_concurrent_blocked_invariant_race() {
                 amount: 600_000,
                 currency: "INR".into(),
                 declared_intent: "Excessive refund amount attempt".into(),
-                context: serde_json::json!({ "customer_id": "cust_high", "payment_id": "pay_test_123" }),
+                context: serde_json::json!({ "customer_id": "cust_high", "payment_id": "pay_test_123", "payment_state": "captured", "captured_paise": 500000, "refunded_paise": 0 }),
                 timestamp: now_utc(),
                 correlation_id: cid,
             };

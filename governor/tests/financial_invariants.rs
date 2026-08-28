@@ -28,7 +28,7 @@ fn test_request(amount: i64, currency: &str, intent: &str) -> AgentActionRequest
         amount,
         currency: currency.into(),
         declared_intent: intent.into(),
-        context: serde_json::json!({ "customer_id": "cust_1", "payment_id": "pay_test_123" }),
+        context: serde_json::json!({ "customer_id": "cust_1", "payment_id": "pay_test_123", "payment_state": "captured", "captured_paise": 500000, "refunded_paise": 0 }),
         timestamp: now_utc(),
         correlation_id: generate_correlation_id(),
     }
