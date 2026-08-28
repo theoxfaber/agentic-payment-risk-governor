@@ -20,9 +20,11 @@ Tagline: **valid API key ≠ valid financial action.**
 
 **3. Over-refund / double-approval → BLOCK / exactly-once.** `90000 > available 80000` → `BLOCK` with `violated_thresholds`. Then run `cargo test --test concurrent_approvals_execute_exactly_once -- --nocapture` → 8 concurrent `POST /v1/decisions/{id}/approve` → **1** gateway execution (`risk_governor_gateway_executions_total 1`).
 
-### 2:00–3:30 — Held-out proof (current, not stale)
+### 2:00–3:30 — Held-out proof (current, not stale) — **lead with caveat before numbers**
 
-Calibration seed `2026`, held-out `31415, 27182, 16180`:
+> **Say first:** "All numbers in this section are from **synthetic** held-out worlds — this is a machinery check (`train → calibrate → guarantee → monitor`), not a production fraud claim — and here's what the machinery proves:"
+
+Calibration seed `2026`, held-out `31415, 27182, 16180` (synthetic, never seen during tuning):
 
 | | Precision | Recall | FP cost | Prevented |
 |---|---:|---:|---:|---:|
@@ -33,9 +35,9 @@ Calibration seed `2026`, held-out `31415, 27182, 16180`:
 
 Households `0/972` flagged. Synthetic disclaimer on screen. Degradation: recall stays `100%`, review share `1% → 59%` — degradation routes to humans. Randomized 140 worlds: `100% / 99.4%`. Camouflage stress (12 runs): budgets hold `z=-1.16` / `0.95`. Chart: `docs/eval-results.svg`.
 
-### 3:30–4:15 — Why the AI is safe
+### 3:30–4:15 — Why the AI is safe (and what's live vs evaluation)
 
-LLM is **evidence-only**: `declared_intent` → claims (amount, action, urgency) sanitized (control chars, fences, role-injection openers, length cap, `<declared_intent>` tags) → `intent_mismatch_score` can force `REVIEW`, never `ALLOW` below policy bounds. Logistic regression is pure Rust, deterministic, versioned JSON artifact `lr_model.json`; CRC thresholds are from fraud-leak `≤2%` / friction `≤1%` budgets (finite-sample, distribution-free). Live pipeline today is the deterministic verifier + risk features; learned + conformal is the **evaluation plane** (see `docs/AI_DESIGN.md` §5) — replay shows `risk_result.model_version` and `policy_result` separately. Keep this distinction.
+LLM is **evidence-only**: `declared_intent` → claims (amount, action, urgency) sanitized (control chars, fences, role-injection openers, length cap, `<declared_intent>` tags) → `intent_mismatch_score` can force `REVIEW`, never `ALLOW` below policy bounds. Logistic regression is pure Rust, deterministic, versioned JSON artifact `lr_model.json` (`lr-1.0.0-calib-0.1.0`); CRC thresholds are from fraud-leak `≤2%` / friction `≤1%` budgets (finite-sample, distribution-free). **Live `/v1/actions` is the deterministic verifier as gate, with learned `p̂` + conformal band (`tau_clear 0.2345 / tau_block 0.99995`, `band` clear/review/block, 8 features) now **wired as live observability** per decision (`learned_insight` in replay + dashboard violet card) — see `GET /v1/decisions/{id}`. The `100%` numbers remain synthetic held-out, not live production; the live proof is `auth → order_TUyv0Ib1swX7ki` + `HttpGateway` idempotency/receipt-probe (refund `404` on fake `pay_*` is the correct fail-closed, not a live refund).
 
 ### 4:15–5:00 — Production boundary & close
 
