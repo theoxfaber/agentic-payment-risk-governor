@@ -1,10 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, fmtINR } from '../lib/api'
 import VotingQuadrant from './VotingQuadrant'
 import PaiseMath from './PaiseMath'
 import { useState } from 'react'
 
 export default function DetailPanel({ id }: { id: string | null }) {
+  const qc = useQueryClient()
   const { data, refetch, isLoading } = useQuery({
     queryKey: ['decision', id],
     queryFn: () => api.get(id!),
@@ -23,18 +24,18 @@ export default function DetailPanel({ id }: { id: string | null }) {
   const refunded = Number(ctx.refunded_paise ?? 0)
 
   const approve = async (approved: boolean) => {
+    if (!reviewer.trim()) { setMsg('Enter reviewer id'); return }
     setBusy(true)
     setMsg('')
     try {
-      await api.approve(d.decision_id, reviewer, approved)
-      setMsg(approved ? 'Approved — gateway executed' : 'Rejected')
-      refetch()
+      const res = await api.approve(d.decision_id, reviewer, approved)
+      setMsg(approved ? `Approved — ${res.human_review?.decision ?? 'executed'} (gateway: ${res.decision})` : `Rejected — ${res.human_review?.decision}`)
+      await Promise.all([refetch(), qc.invalidateQueries({ queryKey: ['decisions'] })])
     } catch (e: unknown) {
       const m = e instanceof Error ? e.message : String(e)
-      if (m === 'unauthorized') {
-        const k = prompt('Risk Governor API key (X-API-Key):')
-        if (k) { api.setKey(k); setMsg('Key saved — retry'); } else setMsg('Auth required')
-      } else setMsg(m)
+      if (m === 'unauthorized') setMsg('Auth failed — check X-API-Key (demo123) in header')
+      else if (m.includes('already reviewed')) setMsg('Already reviewed — refresh queue')
+      else setMsg(m)
     } finally { setBusy(false) }
   }
 
@@ -143,23 +144,25 @@ export default function DetailPanel({ id }: { id: string | null }) {
         </div>
       </div>
 
-      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 flex items-center gap-2">
-        <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="reviewer id" className="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 font-mono text-xs w-36" />
+      <div className={`rounded-lg border p-3 flex flex-wrap items-center gap-2 ${d.human_review ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-amber-500/30 bg-amber-500/5'}`}>
+        <input value={reviewer} onChange={(e) => setReviewer(e.target.value)} placeholder="reviewer id" className="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 font-mono text-xs w-36" disabled={!!d.human_review} />
         <button
           disabled={busy || d.decision !== 'review' || !!d.human_review}
           onClick={() => approve(true)}
-          className="px-3 py-1.5 rounded bg-emerald-500 text-slate-950 font-bold text-xs disabled:opacity-40"
+          className="px-3 py-1.5 rounded bg-emerald-500 text-slate-950 font-bold text-xs disabled:opacity-40 hover:brightness-110"
         >
-          Approve & execute
+          {busy ? '…' : 'Approve & execute'}
         </button>
         <button
           disabled={busy || d.decision !== 'review' || !!d.human_review}
           onClick={() => approve(false)}
-          className="px-3 py-1.5 rounded bg-rose-500 text-white font-bold text-xs disabled:opacity-40"
+          className="px-3 py-1.5 rounded bg-rose-500 text-white font-bold text-xs disabled:opacity-40 hover:brightness-110"
         >
           Reject
         </button>
-        <span className="font-mono text-xs text-slate-400">{d.human_review ? `Reviewed by ${d.human_review.reviewer_id}: ${d.human_review.decision}` : msg || (d.decision !== 'review' ? 'Only REVIEW can be approved' : 'Human-in-the-loop required')}</span>
+        <span className={`font-mono text-xs ${d.human_review ? 'text-emerald-300' : msg.includes('Approved') ? 'text-emerald-300' : msg ? 'text-amber-300' : 'text-slate-400'}`}>
+          {d.human_review ? `✓ Reviewed by ${d.human_review.reviewer_id}: ${String(d.human_review.decision).toUpperCase()}${d.human_review.notes ? ` — ${d.human_review.notes}` : ''}` : msg || (d.decision !== 'review' ? 'Only REVIEW can be approved' : 'Human-in-the-loop required — approve to fire gateway')}
+        </span>
       </div>
 
       <div className="font-mono text-xs">
