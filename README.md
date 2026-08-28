@@ -6,7 +6,7 @@ Execution proxy and policy governor (Rust) that isolates Razorpay credentials fr
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-201%20passing-1a7f37)
+![Tests](https://img.shields.io/badge/tests-202%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
 ---
@@ -84,7 +84,7 @@ git clone https://github.com/theoxfaber/agentic-payment-risk-governor
 cd agentic-payment-risk-governor
 
 cargo test --workspace
-# 201 tests, offline, no credentials
+# 202 tests, offline, no credentials
 
 cargo run --release -p governor-server -- --port 8080
 # http://127.0.0.1:8080         dashboard
@@ -204,7 +204,7 @@ cargo test -p razorpay-gateway -- --nocapture
 
 ```bash
 cargo test --workspace
-# 201 tests, no network, no credentials, no Postgres, no NATS
+# 202 tests, no network, no credentials, no Postgres, no NATS
 
 cargo test --test financial_invariants -- --nocapture
 cargo test --test test_adversarial_concurrency -- --nocapture

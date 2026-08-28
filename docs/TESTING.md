@@ -5,7 +5,7 @@ credentials, no Postgres, no NATS, no LLM API keys. A fresh clone needs only
 a Rust toolchain:
 
 ```bash
-cargo test --workspace        # 201 tests, all green, zero environment setup
+cargo test --workspace        # 202 tests, all green, zero environment setup
 ```
 
 ## Test inventory by crate
@@ -36,7 +36,7 @@ attributed to their crate):
 | `pg-store` | 2 | Seed JSON parsing (live-DB paths are `#[ignore]`-tagged) |
 | `dashboard-v2` | — | Vite + React triage console (proxies to same /v1/* + /metrics, tested via build) |
 
-**Total: 201** (Rust workspace) + dashboard-v2 build.
+**Total: 202** (Rust workspace) + dashboard-v2 build.
 
 ## Which tests touch external infrastructure
 

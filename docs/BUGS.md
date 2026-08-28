@@ -198,6 +198,12 @@ limits) into whatever backend was configured — including Postgres.
 **Fix:** in-memory keeps seeding for dev ergonomics; Postgres requires
 explicit `SEED_DEMO=true`.
 
+## 15. Refund balance invariant was soft — missing fields bypassed the check
+
+**Policy engine · caught by:** pre-submission audit of `README` "Balance bound" vs `policy-engine::evaluate` — the `payment_state` gate and `captured_paise` balance check only ran when the fields were present (`if let Some(...)`), so an agent omitting `payment_state` or `captured_paise` skipped the invariant entirely (still bounded by `max_refund_amount`, but not by actual payment state/balance — same fail-open category as #10 and #7).
+
+**Fix:** fail-closed: missing `payment_state` → `BLOCK "missing payment_state — refund requires captured"`; missing `captured_paise` → `BLOCK "missing captured_paise — refund requires captured amount"`. `eq_ignore_ascii_case("captured")` replaces manual lowercasing. Helpers and tests updated to include `payment_state: captured, captured_paise: 500000, refunded_paise: 0`; new tests `missing_payment_state_fails_closed` / `missing_captured_paise_fails_closed`; `evaluation-service` and `governor` E2E helpers fixed.
+
 ---
 
 ## Known limitations (honest list)
