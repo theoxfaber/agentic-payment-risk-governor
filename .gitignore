@@ -4,3 +4,6 @@
 *.db.backup
 .DS_Store
 seeds/*.local.json
+dashboard-v2/node_modules
+dashboard-v2/dist/assets/*.map
+dashboard-v2/tsconfig*.tsbuildinfo

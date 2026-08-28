@@ -1,0 +1,29 @@
+{
+  "name": "risk-governor-dashboard-v2",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173 --host",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --port 5173"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.2",
+    "@tanstack/react-query": "^5.60.0",
+    "recharts": "^2.13.0",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.1",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3",
+    "tailwindcss": "^3.4.17",
+    "postcss": "^8.4.49",
+    "autoprefixer": "^10.4.20"
+  }
+}

@@ -18,8 +18,8 @@ investigation-engine = { path = "../investigation-engine" }
 dataset-gen = { path = "../dataset-gen" }
 webhook-consumer = { path = "../webhook-consumer" }
 risk-graph = { path = "../risk-graph" }
-dashboard = { path = "../dashboard" }
 pg-store = { path = "../pg-store" }
+tower-http = { workspace = true, features = ["trace", "cors", "fs"] }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

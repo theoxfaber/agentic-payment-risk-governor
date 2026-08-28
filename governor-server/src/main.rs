@@ -52,11 +52,13 @@ fn build_router(state: Arc<AppState>) -> Router {
             auth::require_api_key,
         ));
 
+    let assets = tower_http::services::ServeDir::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../dashboard-v2/dist/assets"));
     Router::new()
         .route("/", get(routes::dashboard_page))
         .route("/dashboard", get(routes::dashboard_page))
         .route("/health", get(routes::health))
         .route("/metrics", get(routes::metrics))
+        .nest_service("/assets", assets)
         .merge(protected)
         .with_state(state)
 }

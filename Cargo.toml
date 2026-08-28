@@ -18,7 +18,6 @@ members = [
     "webhook-consumer",
     "razorpay-gateway",
     "evaluation-service",
-    "dashboard",
     "risk-governor-replay",
     "governor",
     "governor-server",

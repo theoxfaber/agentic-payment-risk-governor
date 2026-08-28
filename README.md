@@ -1,8 +1,6 @@
 # Agentic Payment Risk Governor
 
-An out-of-process execution proxy and policy governor in Rust that isolates Razorpay API credentials from autonomous AI agents and enforces deterministic financial invariants before money moves.
-
-Built for the [Razorpay AI Buildathon 2026](https://razorpay.com/buildathon/) — Track 02: AI Risk Manager.
+Execution proxy and policy governor (Rust) that isolates Razorpay credentials from autonomous agents and enforces deterministic financial invariants before money moves.
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-workspace-dea584?logo=rust)
@@ -11,28 +9,15 @@ Built for the [Razorpay AI Buildathon 2026](https://razorpay.com/buildathon/) �
 
 ---
 
-## The Problem: Unsandboxed Agent Execution
+## Overview
 
-Giving an LLM or autonomous agent direct access to gateway keys (`rzp_live_*` / `rzp_test_*`) causes four failure modes:
-
-1. **Unbounded mutation loops.** Retries on timeouts create duplicate refunds and double charges.
-2. **State blindness.** Agents refund uncaptured, failed, or already-refunded payments.
-3. **Floating-point rounding.** Amounts like `14.99` produce fractional paise and reconciliation drift.
-4. **Credential exposure.** Prompt injection can exfiltrate raw keys from memory or context.
-
-Risk Governor closes these at the proxy boundary. Agents never see the upstream secret.
-
----
-
-## Architecture
-
-The Governor is an HTTP sidecar between the agent and Razorpay. It holds the upstream keys; the agent holds only an internal token.
+Agents with live Razorpay keys (`rzp_test_*` / `rzp_live_*`) can initiate refunds, payouts, and payment links without human supervision. Credential validity does not imply action validity. The governor holds the upstream secret; agents hold only an internal token (`GOVERNOR_API_KEY`). No code path bypasses the policy gate — `ALLOW` and approved `REVIEW` are the only paths that call Razorpay.
 
 ```
 +------------------+         HTTP (internal token)        +----------------------------------+
 |                  | ----------------------------------> |      GOVERNOR SERVER (Rust)      |
-| Autonomous Agent |                                      |  • subtle constant-time auth     |
-|   (LLM / MCP)    | <---------------------------------- |  • integer paise balance gates   |
+| Autonomous Agent |                                      |  • constant-time auth            |
+|   (LLM / MCP)    | <---------------------------------- |  • integer paise balance checks  |
 +------------------+     200 OK / 403 Policy Violation    |  • captured-state validator      |
                                                          |  • SHA-256 tamper-evident log    |
                                                          |  • atomic idempotency locks      |
@@ -46,58 +31,68 @@ The Governor is an HTTP sidecar between the agent and Razorpay. It holds the ups
                                                          +----------------------------------+
 ```
 
-**Request flow:** `action_requested → policy_evaluated → risk_scored → graph_analyzed → decision_made → human_reviewed → razorpay_called`
+Pipeline: `action_requested → policy_evaluated → risk_scored → graph_analyzed → decision_made → human_reviewed → razorpay_called`
 
-Four planes vote before the combiner decides **ALLOW / REVIEW / BLOCK**:
-
-| Plane | Checks | On fail |
+| Plane | Responsibility | Failure mode |
 | --- | --- | --- |
-| Policy | Caps, velocity, country, payment state, paise balance | Hard BLOCK |
-| Risk | Z-scores (true stddev), drift, agent history, intent mismatch | Score 0–1 |
-| Graph | Union-find over shared device/address/instrument | Cluster |
-| Investigation | For vs. against evidence, confidence | REVIEW when unsure |
+| Policy | caps, velocity, country, `payment_state`, `captured − refunded` balance | hard `BLOCK` |
+| Risk | z-scores (population stddev), drift (PSI), agent history, `intent_mismatch_score` | score `0..1` |
+| Graph | union-find over shared device / address / instrument | cluster membership |
+| Investigation | for/against evidence, confidence, exposure | `REVIEW` on conflict or thin evidence |
 
-High risk with contradictory or thin evidence never auto-blocks — it goes to human review. Degraded evidence services force REVIEW, not silent allow.
+High-risk with contradictory or missing evidence routes to human review. Degraded evidence services fail closed to `REVIEW`.
 
 ---
 
-## Enforced Invariants
+## Threat model
 
-All invariants are checked in code and pinned by tests.
+Direct agent access to gateway keys causes:
 
-* **Zero credential exposure.** Upstream secrets never leave the Governor process. Dashboard is unauthenticated and carries no key.
-* **Integer paise.** All amounts are positive `i64` paise (effectively `u64`). Floats are rejected at validation (400, not 500).
-* **Balance bounds.** Refund is rejected unless `payment_state == "captured"` and `amount ≤ captured_paise − refunded_paise` (checked subtraction). Over-refund is a policy BLOCK.
-* **At-most-once.** Deterministic keys `rfnd_{payment_id}_{decision_id}` / `pout_{merchant}_{decision_id}` are sent as `Idempotency-Key` on every gateway POST and cached per `decision_id`. Concurrent duplicates return the cached result.
-* **Tamper-evident log.** Canonical JSON (sorted keys) → SHA-256 `previous_hash → current_hash` chain. `deny_unknown_fields` rejects key-injection payloads.
-* **Constant-time auth.** Inbound keys validated with `subtle::ConstantTimeEq` (`a.ct_eq(b).unwrap_u8() == 1`), not early-return string compare.
+1. **Duplicate execution** — retries on timeouts double-refund or double-charge.
+2. **State blindness** — refund of uncaptured / failed / already-refunded payments.
+3. **Rounding drift** — floating-point amounts produce fractional paise.
+4. **Credential exfiltration** — prompt injection leaks keys from context or memory.
+
+Mitigations are enforced at the proxy boundary and pinned by tests (see Invariants).
+
+---
+
+## Invariants
+
+All checks are integer-arithmetic and constant-time where applicable.
+
+| Invariant | Enforcement | Test |
+| --- | --- | --- |
+| Zero credential exposure — upstream secret never leaves governor; dashboard carries no key | `governor-server` holds `RAZORPAY_KEY_SECRET`; dashboard unauthenticated | `dashboard::tests` |
+| Integer paise — amounts are positive `i64` paise; floats rejected at validation (`400`) | `action-service::validate_request` | `policy-engine` |
+| Balance bound — refund requires `payment_state == "captured"` and `amount ≤ captured − refunded` (checked subtraction) | `policy-engine::evaluate` | `policy-engine`, `governor/tests/financial_invariants.rs` |
+| At-most-once — `rfnd_{payment_id}_{decision_id}` / `pout_{merchant}_{decision_id}` as `Idempotency-Key`; per-`decision_id` execution cache | `razorpay-gateway::HttpGateway::execute` | `razorpay-gateway::tests`, `governor/tests/test_adversarial_concurrency.rs` |
+| Tamper-evident log — canonical JSON (sorted keys) → `SHA-256(previous_hash ‖ record)` chain; `deny_unknown_fields` | `risk-governor-types::canonical_json_bytes` | `audit-service::tests` |
+| Constant-time auth — `subtle::ConstantTimeEq` | `governor-server/src/auth.rs` | `governor-server::tests` |
+| Concurrent approval — 8-way race on same `REVIEW` executes exactly once (claim-under-lock) | `governor-server/src/routes.rs` | `governor-server::tests` |
 
 ---
 
 ## Quickstart
 
-Prerequisites: Rust 1.78+
+Requires Rust 1.78+.
 
 ```bash
 git clone https://github.com/theoxfaber/agentic-payment-risk-governor
 cd agentic-payment-risk-governor
 
-# all tests offline, no credentials
 cargo test --workspace
+# 201 tests, offline, no credentials
 
-# start the governor + dashboard
 cargo run --release -p governor-server -- --port 8080
-# → http://127.0.0.1:8080        dashboard
-# → http://127.0.0.1:8080/metrics  Prometheus
-```
+# http://127.0.0.1:8080         dashboard
+# http://127.0.0.1:8080/metrics  Prometheus
 
-One-command demo (no keys, no network) — ALLOW → REVIEW → BLOCK → payout → held-out numbers:
-
-```bash
 ./demo.sh
+# ALLOW → REVIEW → BLOCK → payout, with audit replay and held-out summary
 ```
 
-Wire any agent via MCP:
+MCP (any capable agent):
 
 ```json
 {
@@ -111,17 +106,15 @@ Wire any agent via MCP:
 }
 ```
 
-Tools: `check_action` → verdict + reasoning · `get_decision` → full replay · `list_reviews` → queue
+Tools: `check_action` (verdict + reasoning), `get_decision` (full replay), `list_reviews` (queue).
 
 ---
 
 ## API
 
-### `POST /v1/actions`
+### POST /v1/actions
 
-Headers: `Content-Type: application/json`, `X-API-Key: <GOVERNOR_API_KEY>` (or `Authorization: Bearer`)
-
-Refund request — all amounts are integer paise:
+Headers: `Content-Type: application/json`, `X-API-Key: <GOVERNOR_API_KEY>` or `Authorization: Bearer <key>`
 
 ```json
 {
@@ -140,7 +133,7 @@ Refund request — all amounts are integer paise:
 }
 ```
 
-Approved (ALLOW) — executed and logged:
+`ALLOW` (executed and logged):
 
 ```json
 {
@@ -152,22 +145,75 @@ Approved (ALLOW) — executed and logged:
 }
 ```
 
-Rejected — balance or state:
+`BLOCK` (balance):
 
 ```json
-{
-  "error": "refund amount 90000 exceeds available balance 80000 (captured 100000 - refunded 20000)",
-  "status": 403
-}
+{ "error": "refund amount 90000 exceeds available balance 80000 (captured 100000 - refunded 20000)", "status": 403 }
 ```
 
-Other endpoints: `GET /v1/decisions`, `GET /v1/decisions/{id}` (full replay), `POST /v1/decisions/{id}/approve`, `GET /health`, `GET /metrics` (open), `GET /dashboard`.
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| `POST` | `/v1/actions` | yes | submit intent, returns `ALLOW`/`REVIEW`/`BLOCK` |
+| `GET` | `/v1/decisions` | yes | list recent decisions |
+| `GET` | `/v1/decisions/{id}` | yes | full replay (policy + risk + graph + audit hash) |
+| `POST` | `/v1/decisions/{id}/approve` | yes | human approval; executes exactly once |
+| `GET` | `/health` | no | liveness |
+| `GET` | `/metrics` | no | Prometheus; decision counters, PSI drift |
+| `GET` | `/dashboard` | no | live stream + replay UI |
 
 ---
 
-## Results — Held-Out
+## Verification
 
-Thresholds tuned on calibration worlds (seed 2026). Measured on three held-out seeds never seen during development.
+### 1. Live gateway smoke (Razorpay test-mode)
+
+Proves authentication and order creation against the real Razorpay API. Payment simulation (`/payments/create/json`) is deprecated on the current API host and is expected to 404 — the smoke treats this as a partial pass and exercises the refund path via `HttpGateway` receipt-probe and idempotency tests.
+
+Last verified: **2026-08-28 04:27 IST** with `rzp_test_TUxx…` (commit `de63e87`):
+
+```
+== 1/4 auth probe ==
+   auth OK: payments endpoint reachable (count=1)
+== 2/4 create order (₹500, auto-capture) ==
+   order order_TUy0Lx63LYUEA8
+== 3/4 simulate customer payment (test card) ==
+   SKIP: legacy /payments/create/json endpoint not found on this API host (deprecated).
+   Live proof still holds: auth + order creation succeeded against real test-mode API.
+SMOKE PASS (partial): auth → order order_TUy0Lx63LYUEA8 (live test mode, payment endpoint deprecated)
+   Next: refund path is exercised via HttpGateway's receipt probe + idempotency guard (mocked payment_id).
+```
+
+Reproduce:
+
+```bash
+RAZORPAY_KEY_ID=rzp_test_... RAZORPAY_KEY_SECRET=... cargo run -p razorpay-gateway --bin rzp_smoke
+```
+
+Refund-path guarantees without live payment capture are covered offline:
+
+```bash
+cargo test -p razorpay-gateway -- --nocapture
+# - per-decision idempotency: duplicate execute fires once
+# - lost-response guard: probes /payments/{id}/refunds?count=100 by receipt == decision_id
+# - routing: /payments/{id}/refund, /payouts, /payment_links
+```
+
+### 2. Offline deterministic suite
+
+```bash
+cargo test --workspace
+# 201 tests, no network, no credentials, no Postgres, no NATS
+
+cargo test --test financial_invariants -- --nocapture
+cargo test --test test_adversarial_concurrency -- --nocapture
+# 8 concurrent approvers on same REVIEW → exactly 1 gateway execution
+```
+
+Coverage gate: `cargo llvm-cov --workspace --fail-under-lines 60` (enforced in CI).
+
+### 3. Held-out evaluation (synthetic)
+
+Thresholds are tuned on calibration worlds (seed `2026`) only. Numbers below are measured on three held-out seeds (`31415`, `27182`, `16180`) never seen during development. This is a machinery check (train → calibrate → guarantee → monitor), not a production performance claim.
 
 | Approach | Precision | Recall | FP cost | FN cost | Prevented |
 | --- | --- | --- | --- | --- | --- |
@@ -177,85 +223,81 @@ Thresholds tuned on calibration worlds (seed 2026). Measured on three held-out s
 | Learned logistic (Rust) | 100% | 100% | ₹0 | ₹0 | ₹2,02,950 |
 | LR + conformal economics | 100% | 94% | ₹0 | ₹1,350 | ₹2,01,600 |
 
-Last row is intentional: auto-allow only when `p̂ × exposure ≤ ₹400` and auto-block via Conformal Risk Control (fraud-leak ≤ 2%, friction ≤ 1%). Conceding ₹1,350 is cheaper than reviewer time for ₹13.50 exposures.
+`LR + conformal` auto-allows only when `p̂ × exposure ≤ ₹400` and auto-blocks via Conformal Risk Control (fraud-leak ≤ 2%, friction ≤ 1%). Conceding ₹1,350 is cheaper than reviewer time for ₹13.50 exposures.
 
-False positives on 972 legit customers sharing devices/addresses/NAT IPs — investigation, learned LR, and calibrated LR each flag **0 of 972**.
-
-Degraded data (missing records, jitter, count noise): recall stays 100% while review share climbs 1% → 72%. Random 140 worlds: 100% precision, 99.4% recall. Stress harness with camouflaged abusers validates the conformal budgets at `z < 1` over 12 runs. Full method in [docs/AI_DESIGN.md](docs/AI_DESIGN.md).
+- 972 legitimate customers sharing devices/addresses/NAT IPs: `0` flagged by investigation, learned, and calibrated detectors.
+- Degraded inputs (missing records, jitter, count noise): recall remains `100%`, review share `1% → 59%` (degradation correctly routes to humans).
+- 140 randomized world shapes (parameters never tuned against): `100%` precision, `99.4%` recall.
+- Camouflaged abusers (12 runs, 2616 customers): leak `z=-1.16` holds, friction `z=0.95` holds.
 
 <p align="center">
-  <img src="docs/eval-results.svg" alt="Held-out precision/recall — investigation & learned models 100%/100% at zero FP cost vs per-customer 66% recall and clustering 51% precision" width="920" />
+  <img src="docs/eval-results.svg" alt="Held-out precision and recall by detector — investigation and learned models achieve 100% precision and recall at zero false-positive cost" width="920" />
 </p>
 
----
-
-## Verification & Adversarial Harness
-
-```bash
-cargo test --workspace
-# 201 tests offline
-
-cargo test --test financial_invariants -- --nocapture
-cargo test --test test_adversarial_concurrency -- --nocapture
-# 8 concurrent approvers on same REVIEW → exactly one execution
-```
-
-| Suite | File | Invariant |
-| --- | --- | --- |
-| Constant-time auth | `governor-server/src/auth.rs` | `ct_eq` prevents timing leakage |
-| Balance bounds | `policy-engine/src/lib.rs` | `captured` gate + `captured−refunded` check |
-| Idempotency | `razorpay-gateway/src/lib.rs` | `rfnd_{payment_id}_{decision_id}` header + decision cache |
-| Concurrent approval | `governor-server/src/routes.rs` | Claim-under-lock: 8-way race → 1 execution |
-| Adversarial concurrency | `governor/tests/test_adversarial_concurrency.rs` | Parallel webhooks, duplicate dispatches |
-| Audit chain | `risk-governor-types/src/lib.rs` | SHA-256 `previous_hash → current_hash` integrity |
-
-Reproduce everything a judge can:
+Full tables: [`docs/EVAL_REPORT_2026-08-28.md`](docs/EVAL_REPORT_2026-08-28.md). Regenerate:
 
 ```bash
 cargo run --release -p eval-harness
-EVAL_HELDOUT_SEEDS=12345,67890 cargo run --release -p eval-harness
-docker compose up -d && cargo run -p governor --bin distributed_demo
-RAZORPAY_KEY_ID=rzp_test_... RAZORPAY_KEY_SECRET=... cargo run -p razorpay-gateway --bin rzp_smoke
+EVAL_HELDOUT_SEEDS=12345,67890 cargo run --release -p eval-harness  # externally supplied seeds
 ```
+
+Method and limits: [`docs/AI_DESIGN.md`](docs/AI_DESIGN.md).
 
 ---
 
 ## Performance
 
-Measured on Linux, release build, loopback, 1,000 iterations:
+Release build, loopback, 1000 iterations, single core:
 
 | Metric | Value | Notes |
 | --- | --- | --- |
-| P50 policy latency | 0.42 ms | Auth + validation + policy |
-| P99 policy latency | 1.18 ms | Including SHA-256 audit chain |
-| Throughput floor | 12,500 req/s | Single core |
+| p50 policy latency | 0.42 ms | auth + validation + policy |
+| p99 policy latency | 1.18 ms | including SHA-256 audit chain |
+| Throughput floor | 12,500 req/s |  |
 | RSS baseline | ~18 MB |  |
 
 ---
 
 ## Configuration
 
-| Variable | Purpose |
-| --- | --- |
-| `GOVERNOR_API_KEY` | Required on `/v1/*` (ephemeral generated if unset, redacted in logs) |
-| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Live test-mode gateway (mock if unset) |
-| `DATABASE_URL` | Postgres persistence (memory if unset) |
-| `NATS_URL` | Distributed bus |
-| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | LLM extraction (heuristic if unset, hardened + evidence-only) |
-| `WEBHOOK_SECRET` | HMAC-SHA256 for `X-Razorpay-Signature` |
-| `SEED_DEMO` | With Postgres, `true`/`1` to seed demo entities |
-| `SCORE_REFERENCE_JSON` | 5-bucket reference for PSI drift at `/metrics` |
+| Variable | Required | Description |
+| --- | --- | --- |
+| `GOVERNOR_API_KEY` | no | API key for `/v1/*`; ephemeral key generated and printed at boot if unset (redacted in logs) |
+| `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | no | live test-mode gateway (mock if unset) |
+| `DATABASE_URL` | no | Postgres persistence (in-memory if unset) |
+| `NATS_URL` | no | distributed bus (in-process if unset) |
+| `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` | no | LLM extraction (heuristic if unset; hardened, evidence-only, § ADR-002/006) |
+| `WEBHOOK_SECRET` | no | HMAC-SHA256 for `X-Razorpay-Signature` |
+| `SEED_DEMO` | no | with Postgres, `true`/`1` to seed demo entities |
+| `SCORE_REFERENCE_JSON` | no | 5-bucket reference for PSI drift at `/metrics` |
 
-See [.env.example](.env.example).
+See [`.env.example`](.env.example).
 
 ---
 
-## Production Deployment
+## Deployment
 
-Run as a sidecar / reverse proxy in front of Razorpay credentials. Agents call the Governor; the Governor calls Razorpay. No code path bypasses the policy gate.
+Run as a sidecar in front of Razorpay credentials. Agents call the governor; the governor calls Razorpay. No bypass path exists.
 
-Roadmap: label maturation (webhooks → `OutcomeRecorded` → nightly retrain gated by PSI), dispute responder `draft → submit`, single-packet velocity races, segment-level conformal recalibration.
+Roadmap (gated by label maturation `webhooks → OutcomeRecorded → nightly retrain`): dispute responder `draft → submit`, single-packet velocity races, segment-level conformal recalibration.
 
-Docs: [AI design](docs/AI_DESIGN.md) · [Bugs & fixes](docs/BUGS.md) · [Testing](docs/TESTING.md)
+---
+
+## Repository layout
+
+```
+governor-server/   axum server, auth, routes, state
+policy-engine/     thresholds, velocity, balance gates
+risk-engine/       scoring, drift, intent mismatch
+risk-graph/        union-find entity graph
+investigation-engine/  evidence for/against, combiner
+razorpay-gateway/  HttpGateway (retry, idempotency, lost-response probe) + MockGateway
+eval-harness/      synthetic worlds, LR, CRC, evaluation
+dataset-gen/       world generators
+governor/          pipeline orchestration
+mcp-server/        MCP tools: check_action, get_decision, list_reviews
+```
+
+Docs: [AI design](docs/AI_DESIGN.md) · [Bugs & fixes](docs/BUGS.md) · [Testing](docs/TESTING.md) · [Benchmark](BENCHMARK.md) · [Decisions](DECISIONS.md)
 
 License: MIT OR Apache-2.0

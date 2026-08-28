@@ -23,11 +23,11 @@ pub(crate) async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResp
     )
 }
 
-/// The dashboard IS the product demo — root serves it directly. The page is
-/// unauthenticated and carries NO secret: reviewers paste their API key in
-/// the browser (sessionStorage) — never baked into served HTML.
+/// Production triage console — Vite + React build from dashboard-v2/dist.
+/// Served as static files; unauthenticated and carries no secret.
 pub(crate) async fn dashboard_page() -> axum::response::Html<String> {
-    axum::response::Html(dashboard::page())
+    const INDEX: &str = include_str!("../../dashboard-v2/dist/index.html");
+    axum::response::Html(INDEX.to_string())
 }
 
 /// Wire format for submissions: caller supplies business fields, server owns
