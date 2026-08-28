@@ -44,7 +44,7 @@ impl PolicyEngine {
                     .or_else(|| request.context.get("payment_status"))
                     .and_then(|v| v.as_str())
                 {
-                    Some(state) if state.to_ascii_lowercase() == "captured" => {}
+                    Some(state) if state.eq_ignore_ascii_case("captured") => {}
                     Some(state) => violated_thresholds.push(format!(
                         "payment state '{}' is not captured — refund requires captured",
                         state
