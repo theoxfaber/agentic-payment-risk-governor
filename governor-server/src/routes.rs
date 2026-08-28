@@ -75,7 +75,12 @@ pub(crate) async fn submit_action(
     // 400, never a 500.
     action_service::validate_request(&request).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let decision = state.svc.process_action(request).await?;
+    let mut decision = state.svc.process_action(request).await?;
+    {
+        let scorer = crate::learned::LearnedScorer::from_embedded();
+        let insight = scorer.score(&decision.evidence_snapshot, &decision.action);
+        decision.learned_insight = Some(insight);
+    }
     state.metrics.record(decision.decision);
     // Drift monitoring: every scored action feeds the risk-score histogram
     // (PSI at /metrics vs SCORE_REFERENCE_JSON when configured).
@@ -109,6 +114,9 @@ pub(crate) async fn list_decisions(State(state): State<Arc<AppState>>) -> Json<s
             "amount": d.action.amount,
             "decision": d.decision,
             "risk_score": d.risk_result.risk_score,
+            "learned_p_hat": d.learned_insight.as_ref().map(|l| l.p_hat),
+            "learned_band": d.learned_insight.as_ref().map(|l| &l.band),
+            "learned_version": d.learned_insight.as_ref().map(|l| &l.model_version),
             "human_decision": d.human_review.as_ref().map(|h| h.decision),
             "created_at": d.created_at,
         }))

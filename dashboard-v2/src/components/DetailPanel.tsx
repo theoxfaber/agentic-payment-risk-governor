@@ -90,6 +90,41 @@ export default function DetailPanel({ id }: { id: string | null }) {
 
       <VotingQuadrant policy={d.policy_result} risk={d.risk_result} evidence={d.evidence_snapshot} />
 
+      {d.learned_insight && (
+        <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-semibold tracking-widest text-violet-300">LEARNED MODEL — CALIBRATED PROBABILITY + CONFORMAL BAND</div>
+            <span className="font-mono text-xs text-slate-400">{d.learned_insight.model_version}</span>
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-xs">
+            <div className="rounded bg-slate-950 border border-slate-800 p-2 text-center">
+              <div className="text-slate-500">p̂ (abuse)</div>
+              <div className="text-lg font-bold text-violet-300">{d.learned_insight.p_hat.toFixed(4)}</div>
+            </div>
+            <div className="rounded bg-slate-950 border border-slate-800 p-2 text-center">
+              <div className="text-slate-500">band</div>
+              <div className={`font-bold ${d.learned_insight.band === 'clear' ? 'text-emerald-400' : d.learned_insight.band === 'block' ? 'text-rose-400' : 'text-amber-400'}`}>
+                {d.learned_insight.band.toUpperCase()}
+              </div>
+              <div className="text-[11px] text-slate-500">
+                τ_clear {d.learned_insight.tau_clear.toFixed(3)} · τ_block {d.learned_insight.tau_block.toFixed(3)}
+              </div>
+            </div>
+            <div className="rounded bg-slate-950 border border-slate-800 p-2">
+              <div className="text-slate-500">features (8)</div>
+              <div className="text-[11px] leading-tight">
+                {Object.entries(d.learned_insight.features)
+                  .map(([k, v]) => `${k}=${(v as number).toFixed(3)}`)
+                  .join(' · ')}
+              </div>
+            </div>
+          </div>
+          <div className="mt-2 font-mono text-[11px] text-slate-500">
+            Live refund path now emits learned + conformal — deterministic verifier remains the gate, learned is observability + economics (p̂×exposure ≤ ₹400). Artifact `eval-harness/artifacts/lr_model.json`
+          </div>
+        </div>
+      )}
+
       <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
         <div className="text-xs font-semibold tracking-widest text-slate-400">EVIDENCE SNAPSHOT</div>
         <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-xs">

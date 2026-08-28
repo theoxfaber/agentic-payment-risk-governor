@@ -108,6 +108,7 @@ mod tests {
                 evaluated_at: now_utc(),
             },
             decision: DecisionOutcome::Allow,
+            learned_insight: None,
             model_version: "1.1.0-investigated".into(),
             evidence_snapshot: Evidence {
                 agent_history: AgentHistory {

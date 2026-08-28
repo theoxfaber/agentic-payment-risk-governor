@@ -371,6 +371,7 @@ where
             action: request,
             policy_result,
             risk_result,
+            learned_insight: None,
             decision,
             model_version: "1.1.0-investigated".to_string(),
             evidence_snapshot: evidence,

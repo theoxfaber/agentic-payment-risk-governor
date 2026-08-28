@@ -7,6 +7,9 @@ export type DecisionSummary = {
   decision: 'allow' | 'review' | 'block'
   human_decision: string | null
   risk_score: number
+  learned_p_hat?: number | null
+  learned_band?: string | null
+  learned_version?: string | null
 }
 
 export type DecisionDetail = {
@@ -34,6 +37,14 @@ export type DecisionDetail = {
       recent_velocity: { actions_last_hour: number; volume_last_hour: number }
       merchant_policy?: Record<string, unknown>
     }
+    learned_insight?: {
+      model_version: string
+      p_hat: number
+      tau_clear: number
+      tau_block: number
+      band: string
+      features: Record<string, number>
+    } | null
     model_version: string
     created_at: string
     human_review: { reviewer_id: string; decision: string; notes?: string } | null

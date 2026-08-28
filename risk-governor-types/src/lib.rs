@@ -205,11 +205,23 @@ pub struct RiskResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearnedInsight {
+    pub model_version: String,
+    pub p_hat: f64,
+    pub tau_clear: f64,
+    pub tau_block: f64,
+    pub band: String,
+    pub features: std::collections::HashMap<String, f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
     pub decision_id: Uuid,
     pub action: AgentActionRequest,
     pub policy_result: PolicyResult,
     pub risk_result: RiskResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub learned_insight: Option<LearnedInsight>,
     pub decision: DecisionOutcome,
     pub model_version: String,
     pub evidence_snapshot: Evidence,
