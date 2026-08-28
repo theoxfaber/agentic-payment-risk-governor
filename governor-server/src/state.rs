@@ -22,16 +22,12 @@ pub(crate) struct AppState {
     pub svc: Arc<Svc>,
     pub audit: Arc<AuditService<AuditBackend>>,
     pub gateway: Arc<Gateway>,
-    /// Every decision served, keyed by decision_id — the review queue reads
-    /// from here, replay reads the immutable trail from the audit store.
     pub decisions: RwLock<HashMap<Uuid, Decision>>,
     pub metrics: Arc<Metrics>,
-    /// Set when DATABASE_URL is configured: decisions are write-through
-    /// persisted here and hydrated from it at boot.
     pub pg: Option<Arc<pg_store::PgStore>>,
-    /// Required on every /v1/* route. From GOVERNOR_API_KEY, or an ephemeral
-    /// generated key printed at boot (local dev/demo) — never "no auth".
     pub api_key: String,
+    pub graph: Arc<risk_graph::PropertyGraph>,
+    pub behaviors: HashMap<String, investigation_engine::CustomerBehavior>,
 }
 
 /// Counters exposed at /metrics in Prometheus text format.
@@ -41,10 +37,10 @@ pub(crate) struct Metrics {
     decisions_review: std::sync::atomic::AtomicU64,
     decisions_block: std::sync::atomic::AtomicU64,
     gateway_executions: std::sync::atomic::AtomicU64,
-    /// Risk-score histogram over five buckets ([0,.2),…,[.8,1]). Prediction
-    /// drift is the earliest observable signal of concept drift while fraud
-    /// labels are still maturing — watch PSI on this before recall moves.
     score_buckets: [std::sync::atomic::AtomicU64; 5],
+    learned_buckets: [std::sync::atomic::AtomicU64; 5],
+    learned_reviews: std::sync::atomic::AtomicU64,
+    learned_blocks: std::sync::atomic::AtomicU64,
 }
 
 /// Reference proportions for the score buckets, loaded once from
@@ -102,6 +98,17 @@ impl Metrics {
         self.score_buckets[idx].fetch_add(1, Relaxed);
     }
 
+    pub(crate) fn record_learned(&self, p_hat: f64, band: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let idx = (((p_hat.clamp(0.0, 1.0)) * 5.0).floor() as usize).min(4);
+        self.learned_buckets[idx].fetch_add(1, Relaxed);
+        match band {
+            "review" => self.learned_reviews.fetch_add(1, Relaxed),
+            "block" => self.learned_blocks.fetch_add(1, Relaxed),
+            _ => 0,
+        };
+    }
+
     fn bucket_proportions(&self) -> Option<[f64; 5]> {
         use std::sync::atomic::Ordering::Relaxed;
         let counts: Vec<u64> = self.score_buckets.iter().map(|b| b.load(Relaxed)).collect();
@@ -143,8 +150,6 @@ impl Metrics {
             load(&self.gateway_executions),
         );
 
-        // Score histogram + drift metric (PSI present only when a reference
-        // distribution is configured via SCORE_REFERENCE_JSON).
         if let Some(props) = self.bucket_proportions() {
             let edges = ["0.2", "0.4", "0.6", "0.8", "1.0"];
             out.push_str(
@@ -160,6 +165,36 @@ impl Metrics {
                      # TYPE risk_governor_score_psi gauge\n",
                 );
                 out.push_str(&format!("risk_governor_score_psi {psi_value:.6}\n"));
+            }
+        }
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            let counts: Vec<u64> = self.learned_buckets.iter().map(|b| b.load(Relaxed)).collect();
+            let total: u64 = counts.iter().sum();
+            if total > 0 {
+                out.push_str(
+                    "# HELP risk_governor_learned_p_hat_bucket Calibrated p_hat histogram.\n\
+                     # TYPE risk_governor_learned_p_hat_bucket counter\n",
+                );
+                let edges = ["0.2", "0.4", "0.6", "0.8", "1.0"];
+                for (edge, c) in edges.iter().zip(counts.iter()) {
+                    out.push_str(&format!(
+                        "risk_governor_learned_p_hat_bucket{{le=\"{edge}\"}} {:.6}\n",
+                        *c as f64 / total as f64
+                    ));
+                }
+                out.push_str(
+                    "# HELP risk_governor_learned_band_total Decisions by learned band.\n\
+                     # TYPE risk_governor_learned_band_total counter\n",
+                );
+                out.push_str(&format!(
+                    "risk_governor_learned_band_total{{band=\"review\"}} {}\n",
+                    self.learned_reviews.load(Relaxed)
+                ));
+                out.push_str(&format!(
+                    "risk_governor_learned_band_total{{band=\"block\"}} {}\n",
+                    self.learned_blocks.load(Relaxed)
+                ));
             }
         }
         out

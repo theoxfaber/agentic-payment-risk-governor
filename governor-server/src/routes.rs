@@ -75,15 +75,72 @@ pub(crate) async fn submit_action(
     // 400, never a 500.
     action_service::validate_request(&request).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let mut decision = state.svc.process_action(request).await?;
+    let mut decision = state.svc.process_action(request.clone()).await?;
+    let investigation = {
+        let cid = request
+            .context
+            .get("customer_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let entity = risk_graph::EntityId::new(risk_graph::EntityKind::Customer, cid);
+        let clusters = state.graph.abuse_ring_clusters(2);
+        clusters.iter().find(|c| c.members.contains(&entity)).map(|c| {
+            let inv = investigation_engine::Investigator::new(investigation_engine::Baseline::default());
+            let r = inv.investigate_return_abuse(&state.graph, c, &state.behaviors, &std::collections::HashMap::new());
+            risk_governor_types::InvestigationSummary {
+                verdict: match r.verdict {
+                    investigation_engine::Verdict::Supported => risk_governor_types::InvestigationVerdict::Supported,
+                    investigation_engine::Verdict::Conflicted => risk_governor_types::InvestigationVerdict::Conflicted,
+                    investigation_engine::Verdict::Unsupported => {
+                        risk_governor_types::InvestigationVerdict::Unsupported
+                    }
+                },
+                evidence_confidence: r.evidence_confidence,
+                support_signals: r.supporting.len() as u32,
+                contradiction_count: r.counter.len() as u32,
+                structurally_suspicious: r.structurally_suspicious,
+                counter_weight: r.counter_weight,
+                estimated_exposure_paise: r.estimated_exposure_paise,
+            }
+        })
+    };
     {
         let scorer = crate::learned::LearnedScorer::from_embedded();
-        let insight = scorer.score(&decision.evidence_snapshot, &decision.action);
+        let insight =
+            scorer.score_with_investigation(&decision.evidence_snapshot, &decision.action, investigation.as_ref());
+        let learned_band = insight.band.clone();
+        let p_hat = insight.p_hat;
         decision.learned_insight = Some(insight);
+        state.metrics.record_learned(p_hat, &learned_band);
+        const REVIEW_COST_PAISE: f64 = 40_000.0;
+        let expected_loss = p_hat * decision.action.amount as f64;
+        if decision.decision == DecisionOutcome::Allow && expected_loss > REVIEW_COST_PAISE {
+            if learned_band == "block" {
+                tracing::info!(
+                    p_hat,
+                    expected_loss,
+                    "learned escalation: ALLOW -> BLOCK (p_hat >= tau_block and expensive)"
+                );
+                decision.decision = DecisionOutcome::Block;
+                decision.policy_result.matched_rules.push(format!(
+                    "learned_escalation:block p_hat={:.3} expected_loss={:.0}",
+                    p_hat, expected_loss
+                ));
+            } else if learned_band == "review" {
+                tracing::info!(
+                    p_hat,
+                    expected_loss,
+                    "learned escalation: ALLOW -> REVIEW (uncertain band and expensive)"
+                );
+                decision.decision = DecisionOutcome::Review;
+                decision.policy_result.matched_rules.push(format!(
+                    "learned_escalation:review p_hat={:.3} expected_loss={:.0}",
+                    p_hat, expected_loss
+                ));
+            }
+        }
     }
     state.metrics.record(decision.decision);
-    // Drift monitoring: every scored action feeds the risk-score histogram
-    // (PSI at /metrics vs SCORE_REFERENCE_JSON when configured).
     state.metrics.record_score(decision.risk_result.risk_score);
     // Every ALLOW fired one money-movement call inside process_action.
     if decision.decision == DecisionOutcome::Allow {

@@ -157,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (graph, behaviors) = default_graph_and_behaviors();
-    let investigator = GraphInvestigator::new(graph, behaviors, HashMap::new(), Baseline::default());
+    let investigator = GraphInvestigator::new(graph.clone(), behaviors.clone(), HashMap::new(), Baseline::default());
 
     let svc = Arc::new(
         action_service::ActionService::new(
@@ -178,6 +178,8 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::new(Metrics::default()),
         pg,
         api_key: resolve_api_key(),
+        graph,
+        behaviors,
     });
 
     let app = build_router(state);

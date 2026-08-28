@@ -115,7 +115,7 @@ pub(crate) mod test_support {
         let audit_store = Arc::new(InMemoryAuditStore::new());
         let gateway = Arc::new(Gateway::Mock(Arc::new(MockGateway::default())));
         let (graph, behaviors) = default_graph_and_behaviors();
-        let investigator = GraphInvestigator::new(graph, behaviors, Map::new(), Baseline::default());
+        let investigator = GraphInvestigator::new(graph.clone(), behaviors.clone(), Map::new(), Baseline::default());
         let svc = Arc::new(
             ActionService::new(
                 Arc::new(policy_engine::PolicyEngine::new()),
@@ -134,6 +134,8 @@ pub(crate) mod test_support {
             metrics: Arc::new(Metrics::default()),
             pg: None,
             api_key: TEST_KEY.into(),
+            graph,
+            behaviors,
         })
     }
 
