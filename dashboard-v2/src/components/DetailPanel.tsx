@@ -91,40 +91,66 @@ export default function DetailPanel({ id }: { id: string | null }) {
 
       <VotingQuadrant policy={d.policy_result} risk={d.risk_result} evidence={d.evidence_snapshot} />
 
-      {d.learned_insight && (
+      {d.learned_insight && (() => {
+        const p = d.learned_insight.p_hat
+        const expLoss = p * d.action.amount
+        const reviewCost = 40000
+        const escalated = d.policy_result.matched_rules.some((r) => String(r).startsWith('learned_escalation'))
+        const pos = Math.min(100, Math.max(0, p * 100))
+        const tauClearPos = d.learned_insight.tau_clear * 100
+        const tauBlockPos = Math.min(100, d.learned_insight.tau_block * 100)
+        return (
         <div className="rounded-lg border border-violet-500/20 bg-violet-500/5 p-3">
           <div className="flex items-center justify-between">
-            <div className="text-xs font-semibold tracking-widest text-violet-300">LEARNED MODEL — CALIBRATED PROBABILITY + CONFORMAL BAND</div>
+            <div className="text-xs font-semibold tracking-widest text-violet-300">LEARNED — p̂ + CRC BAND + ECONOMICS</div>
             <span className="font-mono text-xs text-slate-400">{d.learned_insight.model_version}</span>
+          </div>
+          {escalated && (
+            <div className="mt-2 rounded bg-amber-500/10 border border-amber-500/30 px-2 py-1.5 font-mono text-xs text-amber-300">
+              ⚡ Escalated by learned economics: p̂×₹{(d.action.amount/100).toFixed(0)} = ₹{(expLoss/100).toFixed(0)} {expLoss > reviewCost ? '>' : '≤'} ₹400 → {d.learned_insight.band} band
+            </div>
+          )}
+          <div className="mt-2 relative h-2 rounded-full bg-slate-800 overflow-hidden">
+            <div className="absolute inset-y-0 w-0.5 bg-emerald-500" style={{ left: `${tauClearPos}%` }} title={`τ_clear ${d.learned_insight.tau_clear.toFixed(3)}`} />
+            <div className="absolute inset-y-0 w-0.5 bg-rose-500" style={{ left: `${tauBlockPos}%` }} title={`τ_block ${d.learned_insight.tau_block.toFixed(3)}`} />
+            <div className="absolute top-0 h-full bg-violet-500" style={{ width: `${pos}%`, opacity: 0.9 }} />
+          </div>
+          <div className="mt-1 flex justify-between font-mono text-[10px] text-slate-500">
+            <span>0</span><span>τ_clear {d.learned_insight.tau_clear.toFixed(3)}</span><span>τ_block {d.learned_insight.tau_block.toFixed(2)}</span><span>1</span>
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-xs">
             <div className="rounded bg-slate-950 border border-slate-800 p-2 text-center">
-              <div className="text-slate-500">p̂ (abuse)</div>
-              <div className="text-lg font-bold text-violet-300">{d.learned_insight.p_hat.toFixed(4)}</div>
+              <div className="text-slate-500">p̂ abuse</div>
+              <div className="text-lg font-bold text-violet-300">{p.toFixed(4)}</div>
+              <div className="text-[11px] text-slate-500">E[loss] ₹{(expLoss/100).toFixed(0)} vs ₹400</div>
             </div>
             <div className="rounded bg-slate-950 border border-slate-800 p-2 text-center">
               <div className="text-slate-500">band</div>
-              <div className={`font-bold ${d.learned_insight.band === 'clear' ? 'text-emerald-400' : d.learned_insight.band === 'block' ? 'text-rose-400' : 'text-amber-400'}`}>
+              <div className={`font-bold text-sm ${d.learned_insight.band === 'clear' ? 'text-emerald-400' : d.learned_insight.band === 'block' ? 'text-rose-400' : 'text-amber-400'}`}>
                 {d.learned_insight.band.toUpperCase()}
               </div>
-              <div className="text-[11px] text-slate-500">
-                τ_clear {d.learned_insight.tau_clear.toFixed(3)} · τ_block {d.learned_insight.tau_block.toFixed(3)}
-              </div>
+              <div className="text-[11px] text-slate-500">{expLoss <= reviewCost ? 'cheap to be wrong → clear' : p >= d.learned_insight.tau_block ? 'CRC auto-block' : 'human review'}</div>
             </div>
             <div className="rounded bg-slate-950 border border-slate-800 p-2">
-              <div className="text-slate-500">features (8)</div>
-              <div className="text-[11px] leading-tight">
-                {Object.entries(d.learned_insight.features)
-                  .map(([k, v]) => `${k}=${(v as number).toFixed(3)}`)
-                  .join(' · ')}
+              <div className="text-slate-500">8 features → logit</div>
+              <div className="mt-1 space-y-1">
+                {Object.entries(d.learned_insight.features).sort((a,b)=> Math.abs(b[1] as number)-Math.abs(a[1] as number)).slice(0,4).map(([k,v]) => (
+                  <div key={k} className="flex justify-between text-[11px]"><span className="text-slate-500 truncate">{k}</span><span className={(v as number) > 0.5 ? 'text-violet-300' : 'text-slate-400'}>{(v as number).toFixed(2)}</span></div>
+                ))}
               </div>
             </div>
           </div>
+          <details className="mt-2">
+            <summary className="font-mono text-[11px] text-slate-400 cursor-pointer">all 8 features</summary>
+            <div className="mt-1 font-mono text-[11px] leading-tight text-slate-500 break-all">
+              {Object.entries(d.learned_insight.features).map(([k, v]) => `${k}=${(v as number).toFixed(3)}`).join(' · ')}
+            </div>
+          </details>
           <div className="mt-2 font-mono text-[11px] text-slate-500">
-            Live refund path now emits learned + conformal — deterministic verifier remains the gate, learned is observability + economics (p̂×exposure ≤ ₹400). Artifact `eval-harness/artifacts/lr_model.json`
+            α_leak 0.02 · α_friction 0.01 · CRC finite-sample valid · artifact <span className="text-slate-300">eval-harness/artifacts/lr_model.json</span> · deterministic verifier still gates money
           </div>
         </div>
-      )}
+        )})()}
 
       <div className="rounded-lg border border-slate-800 bg-slate-900 p-3">
         <div className="text-xs font-semibold tracking-widest text-slate-400">EVIDENCE SNAPSHOT</div>
