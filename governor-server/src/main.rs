@@ -27,6 +27,7 @@ mod state;
 
 use auth::resolve_api_key;
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -62,8 +63,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/dashboard", get(routes::dashboard_page))
         .route("/health", get(routes::health))
         .route("/metrics", get(routes::metrics))
+        .route("/webhooks/razorpay", post(routes::razorpay_webhook))
         .nest_service("/assets", assets)
         .merge(protected)
+        .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state)
 }
 
@@ -169,7 +172,8 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(audit_service::AuditService::new(Arc::new(audit_backend.clone()))),
             gateway.clone(),
         )
-        .with_investigator(investigator.into_trait()),
+        .with_investigator(investigator.into_trait())
+        .with_learned_scorer(Arc::new(action_service::learned::DefaultLearnedScorer::from_embedded())),
     );
 
     let anchor_key = std::env::var("AUDIT_SIGNING_KEY")
@@ -181,6 +185,12 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::info!("audit anchor: no AUDIT_SIGNING_KEY — chain is tamper-evident but not externally anchored; set AUDIT_SIGNING_KEY for HMAC-anchored verification");
     }
+    let webhook_secret = std::env::var("WEBHOOK_SECRET").ok().filter(|s| !s.is_empty());
+    if webhook_secret.is_some() {
+        tracing::info!("webhook: Razorpay webhook verification enabled");
+    } else {
+        tracing::info!("webhook: no WEBHOOK_SECRET — /webhooks/razorpay will reject");
+    }
 
     let state = Arc::new(AppState {
         svc,
@@ -191,6 +201,7 @@ async fn main() -> anyhow::Result<()> {
         pg,
         api_key: resolve_api_key(),
         anchor_key,
+        webhook_secret,
         graph,
         behaviors,
     });

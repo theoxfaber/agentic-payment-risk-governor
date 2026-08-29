@@ -124,7 +124,8 @@ pub(crate) mod test_support {
                 Arc::new(AuditService::new(Arc::new(AuditBackend::Mem(audit_store.clone())))),
                 gateway.clone(),
             )
-            .with_investigator(investigator.into_trait()),
+            .with_investigator(investigator.into_trait())
+            .with_learned_scorer(Arc::new(action_service::learned::DefaultLearnedScorer::from_embedded())),
         );
         Arc::new(AppState {
             svc,
@@ -135,6 +136,7 @@ pub(crate) mod test_support {
             pg: None,
             api_key: TEST_KEY.into(),
             anchor_key: None,
+            webhook_secret: None,
             graph,
             behaviors,
         })

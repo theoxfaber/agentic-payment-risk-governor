@@ -283,20 +283,31 @@ impl RazorpayGateway for HttpGateway {
         request: &AgentActionRequest,
         decision_id: Uuid,
     ) -> Result<serde_json::Value, ActionServiceError> {
-        // Layer 1: decision-level idempotency. The second execute() for a
-        // decision (double-clicked approval, replayed message) must never
-        // fire a second money-movement call.
-        if let Some(cached) = self
-            .executed
-            .lock()
-            .expect("gateway idempotency lock")
-            .get(&decision_id)
-        {
-            tracing::warn!(
-                ?decision_id,
-                "duplicate execution attempt — returning cached response, no second gateway call"
-            );
-            return Ok(cached.clone());
+        let mut wait_attempts = 0;
+        loop {
+            {
+                let mut guard = self.executed.lock().expect("gateway idempotency lock");
+                if let Some(cached) = guard.get(&decision_id) {
+                    if cached.get("_pending").and_then(|v| v.as_bool()) == Some(true) {
+                        if wait_attempts >= 40 {
+                            return Err(ActionServiceError::RazorpayGateway(
+                                "concurrent execution already in progress for this decision".into(),
+                            ));
+                        }
+                    } else {
+                        tracing::warn!(
+                            ?decision_id,
+                            "duplicate execution attempt — returning cached response, no second gateway call"
+                        );
+                        return Ok(cached.clone());
+                    }
+                } else {
+                    guard.insert(decision_id, json!({"_pending": true}));
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            wait_attempts += 1;
         }
 
         let idempotency_key = Self::deterministic_idempotency_key(request, decision_id);
@@ -316,11 +327,13 @@ impl RazorpayGateway for HttpGateway {
             }
         };
 
-        if let Ok(payload) = &result {
-            self.executed
-                .lock()
-                .expect("gateway idempotency lock")
-                .insert(decision_id, payload.clone());
+        {
+            let mut guard = self.executed.lock().expect("gateway idempotency lock");
+            if let Ok(payload) = &result {
+                guard.insert(decision_id, payload.clone());
+            } else {
+                guard.remove(&decision_id);
+            }
         }
         result
     }
@@ -505,8 +518,27 @@ impl RazorpayGateway for MockGateway {
         request: &AgentActionRequest,
         decision_id: Uuid,
     ) -> Result<serde_json::Value, ActionServiceError> {
-        if let Some(cached) = self.executed.lock().unwrap().get(&decision_id).cloned() {
-            return Ok(cached);
+        let mut waits = 0;
+        loop {
+            {
+                let mut guard = self.executed.lock().unwrap();
+                if let Some(cached) = guard.get(&decision_id).cloned() {
+                    if cached.get("_pending").and_then(|v| v.as_bool()) == Some(true) {
+                        if waits >= 40 {
+                            return Err(ActionServiceError::RazorpayGateway(
+                                "concurrent mock execution in progress".into(),
+                            ));
+                        }
+                    } else {
+                        return Ok(cached);
+                    }
+                } else {
+                    guard.insert(decision_id, json!({"_pending": true}));
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            waits += 1;
         }
         let body = json!({
             "mock": true,
@@ -514,7 +546,10 @@ impl RazorpayGateway for MockGateway {
             "amount": request.amount,
             "agent_id": request.agent_id,
         });
-        self.calls.lock().unwrap().push((decision_id, body.clone()));
+        {
+            let mut guard = self.calls.lock().unwrap();
+            guard.push((decision_id, body.clone()));
+        }
         let resp = json!({ "id": format!("rfnd_mock_{decision_id}"), "status": "processed", "mock": true });
         self.executed.lock().unwrap().insert(decision_id, resp.clone());
         Ok(resp)

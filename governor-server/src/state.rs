@@ -18,6 +18,7 @@ pub(crate) type Svc = ActionService<
     Gateway,
 >;
 
+#[allow(dead_code)]
 pub(crate) struct AppState {
     pub svc: Arc<Svc>,
     pub audit: Arc<AuditService<AuditBackend>>,
@@ -27,6 +28,7 @@ pub(crate) struct AppState {
     pub pg: Option<Arc<pg_store::PgStore>>,
     pub api_key: String,
     pub anchor_key: Option<Vec<u8>>,
+    pub webhook_secret: Option<String>,
     pub graph: Arc<risk_graph::PropertyGraph>,
     pub behaviors: HashMap<String, investigation_engine::CustomerBehavior>,
 }

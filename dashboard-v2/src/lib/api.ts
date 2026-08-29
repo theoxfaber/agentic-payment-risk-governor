@@ -53,16 +53,14 @@ export type DecisionDetail = {
   audit_trail: { event_type: string; created_at: string; previous_hash?: string; current_hash?: string }[]
 }
 
-const getKey = () => localStorage.getItem('rgov_key') || sessionStorage.getItem('rgov_key') || ''
+const getKey = () => sessionStorage.getItem('rgov_key') || ''
 
 export const api = {
   getKey,
   setKey(k: string) {
-    localStorage.setItem('rgov_key', k)
     sessionStorage.setItem('rgov_key', k)
   },
   clearKey() {
-    localStorage.removeItem('rgov_key')
     sessionStorage.removeItem('rgov_key')
   },
   headers(): Record<string, string> {

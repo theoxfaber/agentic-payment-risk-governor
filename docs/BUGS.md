@@ -226,7 +226,15 @@ Hash-chaining detects partial tampering, not a determined rewrite — anyone who
 
 `decisions: RwLock<HashMap>` and `HttpGateway/MockGateway executed: Arc<Mutex<HashMap>>` are single-process. Horizontal scaling would diverge, and a crash mid-approval loses the in-memory idempotency cache.
 
-**Fix (honest mitigation, not hand-wave):** decisions are *already* hydrated from Postgres on boot and `upsert_decision` survives restarts; crash recovery replays the persisted map. Gateway at-most-once does **not** rely solely on the in-memory cache: layer 2 is the deterministic Razorpay idempotency key `rfnd_{payment_id}_{decision_id}` (Razorpay server-side dedup) + the `receipt == decision_id` refund-landed probe on 5xx, both of which survive a process loss. The in-memory cache is a fast-path dedup; the durable guarantee is Razorpay's idempotency key. Horizontal scaling requires replacing the `RwLock` with `SELECT ... FOR UPDATE` on a `decisions` row and moving the gateway cache to Postgres — documented as the next scaling step, not pretended away.
+**Fix (honest mitigation, not hand-wave):** decisions are *already* hydrated from Postgres on boot and `upsert_decision` survives restarts; crash recovery replays the persisted map. Gateway at-most-once does **not** rely solely on the in-memory cache: layer 2 is the deterministic Razorpay idempotency key `rfnd_{payment_id}_{decision_id}` (Razorpay server-side dedup) + the `receipt == decision_id` refund-landed probe on 5xx, both of which survive a process loss. The in-memory cache is now atomic via `_pending` claim-before-network with `pg_advisory_xact_lock`-style busy-wait ( `HttpGateway`/`MockGateway` insert `_pending` under lock before the network call; concurrent duplicate waits or reuses the final result, never double-fires — `duplicate_decision_id_executes_exactly_once` pinned). Horizontal scaling requires replacing the `RwLock` with `SELECT ... FOR UPDATE` on a `decisions` row and moving the gateway cache to Postgres — documented as the next scaling step, not pretended away.
+
+## 19. Learned escalation happened after money had moved (critical ordering)
+
+**Governor server · caught by:** execution-order audit (`routes.rs:78–141` vs `action-service:264–278`)
+
+`submit_action` called `svc.process_action()` first, which executed the Razorpay gateway for every pre-learned `ALLOW`; only afterward did the route compute `p̂`, attach `learned_insight`, and mutate `ALLOW → REVIEW/BLOCK` in the HTTP response. A request could return `decision: "block"` while a gateway call had already fired — the response, metrics, and audit no longer described the action that controlled execution.
+
+**Fix:** promote the learned gate into the pipeline. `action-service::learned::DefaultLearnedScorer` is now injected into `ActionService` (`with_learned_scorer`) and scored *before* `DecisionMade` and before the `ALLOW` branch. The final outcome is computed once, audited once, and only then passed to `RazorpayGateway`. The HTTP layer no longer rewrites decisions post-execution; it only records metrics from `decision.learned_insight`. Wired through `governor-server` production `wire()` and `bootstrap::test_state`; pinned by `learned_escalation_blocks_before_gateway` (high `p̂` + expensive amount → `BLOCK` with zero gateway calls) and `learned_review_escalation_blocks_allow_but_still_no_gateway`.
 
 ---
 

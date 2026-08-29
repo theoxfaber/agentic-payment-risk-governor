@@ -1,3 +1,5 @@
+pub mod learned;
+use learned::LearnedScorer;
 use risk_governor_correlation::scope_correlation;
 use risk_governor_types::*;
 use std::sync::Arc;
@@ -98,6 +100,7 @@ where
     audit_service: Arc<A>,
     razorpay_gateway: Arc<G>,
     investigator: Option<Arc<dyn Investigator>>,
+    learned_scorer: Option<Arc<dyn LearnedScorer>>,
 }
 
 impl<P, R, E, A, G> ActionService<P, R, E, A, G>
@@ -122,6 +125,7 @@ where
             audit_service,
             razorpay_gateway,
             investigator: None,
+            learned_scorer: None,
         }
     }
 
@@ -129,6 +133,11 @@ where
     /// mandatory in production configs.
     pub fn with_investigator(mut self, investigator: Arc<dyn Investigator>) -> Self {
         self.investigator = Some(investigator);
+        self
+    }
+
+    pub fn with_learned_scorer(mut self, scorer: Arc<dyn LearnedScorer>) -> Self {
+        self.learned_scorer = Some(scorer);
         self
     }
 
@@ -240,7 +249,7 @@ where
                 .push(format!("evidence_service_unavailable:{reason}"));
         }
 
-        let decision = self.combine_decision(
+        let mut decision = self.combine_decision(
             decision_id,
             request.clone(),
             evidence.clone(),
@@ -248,6 +257,32 @@ where
             risk_result.clone(),
             investigation.as_ref(),
         )?;
+
+        if let Some(scorer) = &self.learned_scorer {
+            let insight = scorer.score_with_investigation(&evidence, &request, investigation.as_ref());
+            let band = insight.band.clone();
+            let p_hat = insight.p_hat;
+            decision.learned_insight = Some(insight);
+            const REVIEW_COST_PAISE: f64 = 40_000.0;
+            let expected_loss = p_hat * request.amount as f64;
+            if decision.decision == DecisionOutcome::Allow && expected_loss > REVIEW_COST_PAISE {
+                if band == "block" {
+                    tracing::info!(p_hat, expected_loss, "learned escalation: ALLOW -> BLOCK");
+                    decision.decision = DecisionOutcome::Block;
+                    decision.policy_result.matched_rules.push(format!(
+                        "learned_escalation:block p_hat={:.3} expected_loss={:.0}",
+                        p_hat, expected_loss
+                    ));
+                } else if band == "review" {
+                    tracing::info!(p_hat, expected_loss, "learned escalation: ALLOW -> REVIEW");
+                    decision.decision = DecisionOutcome::Review;
+                    decision.policy_result.matched_rules.push(format!(
+                        "learned_escalation:review p_hat={:.3} expected_loss={:.0}",
+                        p_hat, expected_loss
+                    ));
+                }
+            }
+        }
 
         self.audit_service
             .record(AuditRecord {
@@ -742,5 +777,105 @@ mod tests {
             .matched_rules
             .iter()
             .any(|r| r.starts_with("evidence_service_unavailable")));
+    }
+
+    #[tokio::test]
+    async fn learned_escalation_blocks_before_gateway() {
+        struct CountingGateway {
+            calls: std::sync::Arc<std::sync::Mutex<u32>>,
+        }
+        #[async_trait::async_trait]
+        impl RazorpayGateway for CountingGateway {
+            async fn execute(&self, _: &AgentActionRequest, _: Uuid) -> Result<serde_json::Value, ActionServiceError> {
+                *self.calls.lock().unwrap() += 1;
+                Ok(serde_json::json!({"status":"processed"}))
+            }
+        }
+        struct HighRiskLearned;
+        impl crate::learned::LearnedScorer for HighRiskLearned {
+            fn score_with_investigation(
+                &self,
+                _: &Evidence,
+                _: &AgentActionRequest,
+                _: Option<&InvestigationSummary>,
+            ) -> LearnedInsight {
+                LearnedInsight {
+                    model_version: "test-high".into(),
+                    p_hat: 0.99,
+                    tau_clear: 0.2,
+                    tau_block: 0.5,
+                    band: "block".into(),
+                    features: Default::default(),
+                }
+            }
+        }
+        let counter = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let gw = Arc::new(CountingGateway { calls: counter.clone() });
+        let svc = ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedRisk(0.05)),
+            Arc::new(EvidenceOk),
+            Arc::new(AuditOk),
+            gw,
+        )
+        .with_learned_scorer(Arc::new(HighRiskLearned));
+        let mut req = valid_request();
+        req.amount = 200_000;
+        let d = svc.process_action(req).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Block);
+        assert!(d
+            .policy_result
+            .matched_rules
+            .iter()
+            .any(|r| r.starts_with("learned_escalation:block")));
+        assert_eq!(*counter.lock().unwrap(), 0, "learned BLOCK must not call gateway");
+        assert!(d.learned_insight.is_some());
+    }
+
+    #[tokio::test]
+    async fn learned_review_escalation_blocks_allow_but_still_no_gateway() {
+        struct CountingGateway {
+            calls: std::sync::Arc<std::sync::Mutex<u32>>,
+        }
+        #[async_trait::async_trait]
+        impl RazorpayGateway for CountingGateway {
+            async fn execute(&self, _: &AgentActionRequest, _: Uuid) -> Result<serde_json::Value, ActionServiceError> {
+                *self.calls.lock().unwrap() += 1;
+                Ok(serde_json::json!({"status":"processed"}))
+            }
+        }
+        struct ReviewLearned;
+        impl crate::learned::LearnedScorer for ReviewLearned {
+            fn score_with_investigation(
+                &self,
+                _: &Evidence,
+                _: &AgentActionRequest,
+                _: Option<&InvestigationSummary>,
+            ) -> LearnedInsight {
+                LearnedInsight {
+                    model_version: "test-review".into(),
+                    p_hat: 0.6,
+                    tau_clear: 0.2,
+                    tau_block: 0.95,
+                    band: "review".into(),
+                    features: Default::default(),
+                }
+            }
+        }
+        let counter = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let gw = Arc::new(CountingGateway { calls: counter.clone() });
+        let svc = ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedRisk(0.05)),
+            Arc::new(EvidenceOk),
+            Arc::new(AuditOk),
+            gw,
+        )
+        .with_learned_scorer(Arc::new(ReviewLearned));
+        let mut req = valid_request();
+        req.amount = 200_000;
+        let d = svc.process_action(req).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Review);
+        assert_eq!(*counter.lock().unwrap(), 0, "learned REVIEW must not call gateway");
     }
 }

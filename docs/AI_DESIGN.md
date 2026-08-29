@@ -209,11 +209,7 @@ The pipeline is already wired for the production loop:
   signal; it does not predict production performance.
 - The conformal guarantee is marginal, not conditional (impossible in
   general — Vovk); segment-level recalibration is the mitigation.
-- The learned detector currently operates on customer-behavior features (the
-  detection plane where labels exist). The live agent-action pipeline still
-  uses the hand-tuned combiner; wiring the LR into it requires matured
-  outcome labels flowing from webhooks (§4 step 1), which is the stated next
-  milestone, not a shipped claim.
+- Since `3748727` the learned detector **is wired into the live pipeline** (`action-service` scores every request via `DefaultLearnedScorer` before `DecisionMade`, escalating `ALLOW → REVIEW/BLOCK` on `p̂ × amount > ₹400` within the conformal band, and the HTTP layer only persists/audits the final outcome). Before that revision the HTTP layer rewrote the response after execution (now fixed; see `docs/BUGS.md #19`). Webhook-driven label maturation (§4-1) remains the next milestone for *retraining* on real outcomes, but the live gate is no longer “future”.
 
 ## References
 

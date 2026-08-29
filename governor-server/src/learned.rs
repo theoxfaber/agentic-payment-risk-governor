@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use risk_governor_types::{AgentActionRequest, Evidence, InvestigationSummary, LearnedInsight};
 use std::collections::HashMap;
 
