@@ -476,7 +476,7 @@ impl HttpGateway {
 /// Phase 1 stand-in: records what would have been sent, moves no money.
 /// Mirrors HttpGateway idempotency so demo + tests exercise at-most-once without network.
 pub struct MockGateway {
-    pub calls: std::sync::Arc<std::sync::Mutex<Vec<(Uuid, serde_json::Value)>>> ,
+    pub calls: std::sync::Arc<std::sync::Mutex<Vec<(Uuid, serde_json::Value)>>>,
     executed: std::sync::Arc<std::sync::Mutex<HashMap<Uuid, serde_json::Value>>>,
 }
 

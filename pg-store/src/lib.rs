@@ -186,11 +186,7 @@ impl PgStore {
 impl AuditStore for PgStore {
     async fn append(&self, mut record: AuditRecord) -> Result<(), AuditError> {
         if record.current_hash.is_empty() {
-            let mut tx = self
-                .pool
-                .begin()
-                .await
-                .map_err(|e| AuditError::Write(e.to_string()))?;
+            let mut tx = self.pool.begin().await.map_err(|e| AuditError::Write(e.to_string()))?;
             sqlx::query("SELECT pg_advisory_xact_lock($1)")
                 .bind(0xA941_i64)
                 .execute(&mut *tx)
@@ -224,9 +220,7 @@ impl AuditStore for PgStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| AuditError::Write(e.to_string()))?;
-            tx.commit()
-                .await
-                .map_err(|e| AuditError::Write(e.to_string()))?;
+            tx.commit().await.map_err(|e| AuditError::Write(e.to_string()))?;
             return Ok(());
         }
 
