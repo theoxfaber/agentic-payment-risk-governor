@@ -474,9 +474,28 @@ impl HttpGateway {
 }
 
 /// Phase 1 stand-in: records what would have been sent, moves no money.
-#[derive(Default)]
+/// Mirrors HttpGateway idempotency so demo + tests exercise at-most-once without network.
 pub struct MockGateway {
-    pub calls: std::sync::Mutex<Vec<(Uuid, serde_json::Value)>>,
+    pub calls: std::sync::Arc<std::sync::Mutex<Vec<(Uuid, serde_json::Value)>>> ,
+    executed: std::sync::Arc<std::sync::Mutex<HashMap<Uuid, serde_json::Value>>>,
+}
+
+impl Default for MockGateway {
+    fn default() -> Self {
+        Self {
+            calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            executed: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl Clone for MockGateway {
+    fn clone(&self) -> Self {
+        Self {
+            calls: self.calls.clone(),
+            executed: self.executed.clone(),
+        }
+    }
 }
 
 #[async_trait]
@@ -486,6 +505,9 @@ impl RazorpayGateway for MockGateway {
         request: &AgentActionRequest,
         decision_id: Uuid,
     ) -> Result<serde_json::Value, ActionServiceError> {
+        if let Some(cached) = self.executed.lock().unwrap().get(&decision_id).cloned() {
+            return Ok(cached);
+        }
         let body = json!({
             "mock": true,
             "action_type": request.action_type,
@@ -493,7 +515,9 @@ impl RazorpayGateway for MockGateway {
             "agent_id": request.agent_id,
         });
         self.calls.lock().unwrap().push((decision_id, body.clone()));
-        Ok(json!({ "id": format!("rfnd_mock_{decision_id}"), "status": "processed", "mock": true }))
+        let resp = json!({ "id": format!("rfnd_mock_{decision_id}"), "status": "processed", "mock": true });
+        self.executed.lock().unwrap().insert(decision_id, resp.clone());
+        Ok(resp)
     }
 }
 

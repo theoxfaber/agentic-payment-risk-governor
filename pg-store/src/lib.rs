@@ -186,11 +186,20 @@ impl PgStore {
 impl AuditStore for PgStore {
     async fn append(&self, mut record: AuditRecord) -> Result<(), AuditError> {
         if record.current_hash.is_empty() {
-            // Get last hash from DB
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| AuditError::Write(e.to_string()))?;
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(0xA941_i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AuditError::Write(e.to_string()))?;
             let last_hash: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
                 "SELECT current_hash FROM audit_records ORDER BY created_at DESC LIMIT 1",
             )
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(|e| AuditError::Write(e.to_string()))?
             .and_then(|(h,)| h);
@@ -204,6 +213,21 @@ impl AuditStore for PgStore {
                 record.created_at,
                 record.previous_hash.as_deref(),
             );
+            sqlx::query("INSERT INTO audit_records (record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+                .bind(record.record_id)
+                .bind(record.decision_id)
+                .bind(event_type_str(record.event_type))
+                .bind(record.payload.clone())
+                .bind(record.created_at)
+                .bind(record.previous_hash.clone())
+                .bind(record.current_hash.clone())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AuditError::Write(e.to_string()))?;
+            tx.commit()
+                .await
+                .map_err(|e| AuditError::Write(e.to_string()))?;
+            return Ok(());
         }
 
         sqlx::query("INSERT INTO audit_records (record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)")
