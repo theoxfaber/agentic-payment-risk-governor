@@ -4,10 +4,10 @@ Defense-only verifier for autonomous refund abuse. Agents never hold the Razorpa
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-202%20passing-1a7f37)
+![Tests](https://img.shields.io/badge/tests-209%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
-> **Scope:** `POST /v1/actions → ALLOW / REVIEW / BLOCK → at-most-once Razorpay → audited`. Live is the deterministic verifier + risk features with learned `p̂` + conformal band emitted as observability. Synthetic held-out data proves the machinery — see `docs/AI_DESIGN.md` §5.
+> **Scope:** `POST /v1/actions → ALLOW / REVIEW / BLOCK → at-most-once Razorpay → audited`. Live is the deterministic verifier + risk features with learned `p̂` + conformal band **gating before execution** (`p̂·amount > ₹400` escalates `ALLOW→REVIEW/BLOCK` before `DecisionMade`/gateway; see `docs/BUGS.md` #19). Synthetic held-out data proves the machinery — see `docs/AI_DESIGN.md` §5.
 
 ---
 
@@ -17,7 +17,7 @@ Defense-only verifier for autonomous refund abuse. Agents never hold the Razorpa
 git clone https://github.com/theoxfaber/agentic-payment-risk-governor
 cd agentic-payment-risk-governor
 
-cargo test --workspace          # 202 tests, offline, no credentials
+cargo test --workspace          # 209 tests, offline, no credentials
 cargo run --release -p governor-server -- --port 8080
 # http://127.0.0.1:8080         triage console
 # http://127.0.0.1:8080/metrics  Prometheus
@@ -39,12 +39,11 @@ MCP for any agent:
 
 ```
 Agent (no keys) -- HTTP + X-API-Key --> Governor Server (Rust) -- HTTPS + rzp_test_* --> Razorpay API
-                                        ├─ constant-time auth (subtle ct_eq)
-                                        ├─ integer paise + captured-state + balance (fail-closed)
-                                        ├─ risk + graph + investigation → combiner
-                                        ├─ learned p̂ + tau_clear/block (observability)
-                                        ├─ SHA-256 previous_hash → current_hash (canonical JSON)
-                                        └─ rfnd_{pay}_{decision} idempotency + claim-under-lock
+                                         ├─ constant-time auth (subtle ct_eq)
+                                         ├─ integer paise + captured-state + balance (fail-closed)
+                                         ├─ risk + graph + investigation → combiner → learned p̂ + tau_clear/block (gate before DecisionMade/gateway, HMAC-anchored)
+                                         ├─ SHA-256 previous_hash → current_hash (canonical JSON, /v1/audit/verify)
+                                         └─ rfnd_{pay}_{decision} idempotency + _pending claim + receipt probe
 ```
 
 `action_requested → policy_evaluated → risk_scored → graph_analyzed → decision_made (+ learned_insight) → human_reviewed → razorpay_called`
@@ -92,8 +91,10 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 |---|---|---|---|
 | `POST` | `/v1/actions` | yes | `ALLOW`/`REVIEW`/`BLOCK` + `learned_insight` |
 | `GET` | `/v1/decisions` | yes | list (adds `learned_p_hat`/`band`) |
-| `GET` | `/v1/decisions/{id}` | yes | full replay + `audit_trail` |
+| `GET` | `/v1/decisions/{id}` | yes | full replay + `audit_trail` + `audit_verified` + `audit_anchor` |
 | `POST` | `/v1/decisions/{id}/approve` | yes | human `allow`/`block`, exactly once |
+| `GET` | `/v1/audit/verify` + `/v1/audit/anchor` | yes | hash-chain verification + HMAC head |
+| `POST` | `/webhooks/razorpay` | no* | HMAC-verified, audited (`*requires WEBHOOK_SECRET`) |
 | `GET` | `/health` `/metrics` `/` | no | liveness, Prometheus, console |
 
 ---
@@ -102,7 +103,7 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 
 **Live smoke (test-mode, partial):** `auth OK + order_TUyv0Ib1swX7ki` live; `/payments/create/json` is deprecated `404` → refund path covered by `HttpGateway` tests (idempotency, receipt probe). Reproduce: `RAZORPAY_KEY_ID=rzp_test_... cargo run -p razorpay-gateway --bin rzp_smoke`
 
-**Offline suite:** `cargo test --workspace` (202), `cargo test --test financial_invariants`, `cargo test --test test_adversarial_concurrency` (8-way race → 1). Coverage `cargo llvm-cov --workspace --fail-under-lines 60`.
+**Offline suite:** `cargo test --workspace` (209), `cargo test --test financial_invariants`, `cargo test --test test_adversarial_concurrency` (8-way race → 1), `learned_escalation_blocks_before_gateway` (0 calls on BLOCK). Coverage `cargo llvm-cov --workspace --fail-under-lines 60`.
 
 **Held-out (synthetic, machinery check):** calibration `2026`, held-out `31415/27182/16180`.
 
@@ -126,7 +127,8 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 | `DATABASE_URL` | Postgres (memory if unset) |
 | `NATS_URL` | bus (in-process if unset) |
 | `LLM_API_KEY` / `BASE_URL` / `MODEL` | intent claims, evidence-only, hardened |
-| `WEBHOOK_SECRET` | `X-Razorpay-Signature` (ct `verify_slice`) |
+| `WEBHOOK_SECRET` | `X-Razorpay-Signature` (ct `verify_slice`) — also enables `POST /webhooks/razorpay` |
+| `AUDIT_SIGNING_KEY` | HMAC-SHA256 of chain head for `/v1/audit/verify` + `/v1/audit/anchor` (see `docs/BUGS.md` #17) |
 | `SEED_DEMO` | `true` to seed demo on Postgres |
 | `SCORE_REFERENCE_JSON` | 5-bucket PSI reference |
 
