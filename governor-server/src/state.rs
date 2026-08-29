@@ -26,6 +26,7 @@ pub(crate) struct AppState {
     pub metrics: Arc<Metrics>,
     pub pg: Option<Arc<pg_store::PgStore>>,
     pub api_key: String,
+    pub anchor_key: Option<Vec<u8>>,
     pub graph: Arc<risk_graph::PropertyGraph>,
     pub behaviors: HashMap<String, investigation_engine::CustomerBehavior>,
 }

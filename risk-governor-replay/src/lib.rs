@@ -10,6 +10,8 @@ pub enum ReplayError {
     DecisionNotFound(Uuid),
     #[error("incomplete audit trail for decision {0}: missing {1}")]
     IncompleteTrail(Uuid, &'static str),
+    #[error("audit chain tamper detected for decision {0}: {1}")]
+    ChainTampered(Uuid, String),
 }
 
 /// Read-only reconstruction of exactly what evidence/features/policy/model
@@ -30,6 +32,9 @@ impl<S: AuditStore + 'static> ReplayEngine<S> {
             .trail_for(decision_id)
             .await
             .map_err(|_| ReplayError::IncompleteTrail(decision_id, "unreachable audit store"))?;
+        if !trail.is_empty() {
+            AuditService::<S>::verify_records(&trail).map_err(|e| ReplayError::ChainTampered(decision_id, e))?;
+        }
 
         let decision_record = trail
             .iter()

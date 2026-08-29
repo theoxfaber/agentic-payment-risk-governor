@@ -181,6 +181,7 @@ pub(crate) async fn list_decisions(State(state): State<Arc<AppState>>) -> Json<s
 }
 
 /// Replay: what the governor saw, every evaluation it ran, and why it decided.
+/// The per-decision trail is verified with the hash chain; a tampered trail returns 500.
 pub(crate) async fn replay_decision(
     State(state): State<Arc<AppState>>,
     Path(decision_id): Path<Uuid>,
@@ -197,10 +198,80 @@ pub(crate) async fn replay_decision(
         .trail_for(decision_id)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    let chain_verified = audit_service::AuditService::<crate::backends::AuditBackend>::verify_records(&trail).is_ok();
+    if !chain_verified && !trail.is_empty() {
+        let err = audit_service::AuditService::<crate::backends::AuditBackend>::verify_records(&trail).unwrap_err();
+        return Err(ApiError::internal(format!(
+            "audit chain tampered for {decision_id}: {err}"
+        )));
+    }
+    let anchor = state.anchor_key.as_deref().and_then(|k| {
+        trail.last().map(|h| {
+            serde_json::json!({
+                "head_hash": h.current_hash,
+                "hmac_sha256": audit_service::anchor_signature(&h.current_hash, k),
+                "anchored": true,
+            })
+        })
+    });
     Ok(Json(serde_json::json!({
         "decision": decision,
         "audit_trail": trail,
+        "audit_verified": chain_verified,
+        "audit_anchor": anchor,
     })))
+}
+
+pub(crate) async fn verify_audit_chain(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let records = state.audit.all_records().await.unwrap_or_default();
+    let verified = audit_service::AuditService::<crate::backends::AuditBackend>::verify_chain(&records);
+    let head = records.last().map(|r| r.current_hash.clone());
+    let anchor = match (&state.anchor_key, &head) {
+        (Some(k), Some(h)) => Some(serde_json::json!({
+            "head_hash": h,
+            "hmac_sha256": audit_service::anchor_signature(h, k),
+            "anchored": true,
+        })),
+        _ => head
+            .as_ref()
+            .map(|h| serde_json::json!({ "head_hash": h, "anchored": false })),
+    };
+    match verified {
+        Ok(()) => Json(serde_json::json!({
+            "verified": true,
+            "records": records.len(),
+            "head": head,
+            "anchor": anchor,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "verified": false,
+            "records": records.len(),
+            "head": head,
+            "anchor": anchor,
+            "error": e,
+        })),
+    }
+}
+
+pub(crate) async fn audit_anchor(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let records = state.audit.all_records().await.unwrap_or_default();
+    let head = records.last().map(|r| r.current_hash.clone());
+    match (&state.anchor_key, head) {
+        (Some(k), Some(h)) => Json(serde_json::json!({
+            "head_hash": h,
+            "hmac_sha256": audit_service::anchor_signature(&h, k),
+            "anchored": true,
+            "records": records.len(),
+            "note": "HMAC-SHA256 of chain head with AUDIT_SIGNING_KEY (out-of-process). Publish this anchor externally; a full-chain rewrite without the key cannot forge it."
+        })),
+        (None, Some(h)) => Json(serde_json::json!({
+            "head_hash": h,
+            "anchored": false,
+            "records": records.len(),
+            "note": "Chain is hash-linked but not HMAC-anchored. Set AUDIT_SIGNING_KEY to enable external anchor; also REVOKE UPDATE/DELETE on audit_records in Postgres for append-only storage."
+        })),
+        (_, None) => Json(serde_json::json!({ "head_hash": null, "anchored": false, "records": 0 })),
+    }
 }
 
 #[derive(serde::Deserialize)]

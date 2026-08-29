@@ -134,6 +134,7 @@ pub(crate) mod test_support {
             metrics: Arc::new(Metrics::default()),
             pg: None,
             api_key: TEST_KEY.into(),
+            anchor_key: None,
             graph,
             behaviors,
         })

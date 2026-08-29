@@ -48,6 +48,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/decisions", get(routes::list_decisions))
         .route("/v1/decisions/:id", get(routes::replay_decision))
         .route("/v1/decisions/:id/approve", post(routes::approve_decision))
+        .route("/v1/audit/verify", get(routes::verify_audit_chain))
+        .route("/v1/audit/anchor", get(routes::audit_anchor))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,
@@ -170,6 +172,16 @@ async fn main() -> anyhow::Result<()> {
         .with_investigator(investigator.into_trait()),
     );
 
+    let anchor_key = std::env::var("AUDIT_SIGNING_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.into_bytes());
+    if anchor_key.is_some() {
+        tracing::info!("audit anchor: HMAC signing enabled (AUDIT_SIGNING_KEY set)");
+    } else {
+        tracing::info!("audit anchor: no AUDIT_SIGNING_KEY — chain is tamper-evident but not externally anchored; set AUDIT_SIGNING_KEY for HMAC-anchored verification");
+    }
+
     let state = Arc::new(AppState {
         svc,
         audit: Arc::new(audit_service::AuditService::new(Arc::new(audit_backend))),
@@ -178,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::new(Metrics::default()),
         pg,
         api_key: resolve_api_key(),
+        anchor_key,
         graph,
         behaviors,
     });

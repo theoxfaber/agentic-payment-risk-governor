@@ -25,6 +25,8 @@ const SCHEMA: &[&str] = &[
         created_at    TIMESTAMPTZ NOT NULL,
         previous_hash TEXT,
         current_hash  TEXT NOT NULL DEFAULT ''
+        -- Append-only: in production REVOKE UPDATE, DELETE ON audit_records FROM app_role;
+        -- chain head HMAC anchored externally via AUDIT_SIGNING_KEY (see docs/BUGS.md #17)
     )",
     "CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_records(decision_id)",
     "CREATE TABLE IF NOT EXISTS decisions (

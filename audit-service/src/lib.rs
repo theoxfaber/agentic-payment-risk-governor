@@ -1,9 +1,26 @@
 use chrono::Utc;
+use hmac::{Hmac, Mac};
 use risk_governor_types::*;
+use sha2::Sha256;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+pub fn anchor_signature(head_hash: &str, key: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac key");
+    mac.update(head_hash.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+pub fn verify_anchor_signature(head_hash: &str, signature: &str, key: &[u8]) -> bool {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac key");
+    mac.update(head_hash.as_bytes());
+    match hex::decode(signature.trim()) {
+        Ok(sig) => mac.verify_slice(&sig).is_ok(),
+        Err(_) => false,
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum AuditError {
@@ -107,7 +124,8 @@ impl<S: AuditStore> AuditService<S> {
         self.store.all().await
     }
 
-    /// Verifies the cryptographic tamper-evident integrity of an audit record chain.
+    /// Verifies the cryptographic tamper-evident integrity of a contiguous audit record chain.
+    /// Use for global `all()` ordering — it enforces previous_hash linkage.
     pub fn verify_chain(records: &[AuditRecord]) -> Result<(), String> {
         let mut prev_hash: Option<String> = None;
         for (i, r) in records.iter().enumerate() {
@@ -132,6 +150,46 @@ impl<S: AuditStore> AuditService<S> {
                 ));
             }
             prev_hash = Some(r.current_hash.clone());
+        }
+        Ok(())
+    }
+
+    /// Verifies record-hash integrity for a filtered trail (e.g. by_decision).
+    /// Checks each record's hash but not cross-record linkage, since the filter
+    /// removes the global predecessor.
+    pub fn verify_records(records: &[AuditRecord]) -> Result<(), String> {
+        for (i, r) in records.iter().enumerate() {
+            let expected = AuditRecord::compute_hash(
+                r.record_id,
+                r.decision_id,
+                r.event_type,
+                &r.payload,
+                r.created_at,
+                r.previous_hash.as_deref(),
+            );
+            if r.current_hash != expected {
+                return Err(format!(
+                    "tamper detected at index {i} (record_id {}): hash mismatch (got {}, expected {})",
+                    r.record_id, r.current_hash, expected
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn chain_head(records: &[AuditRecord]) -> Option<String> {
+        records.last().map(|r| r.current_hash.clone())
+    }
+
+    pub fn anchor_head(head_hash: &str, key: &[u8]) -> String {
+        anchor_signature(head_hash, key)
+    }
+
+    pub fn verify_chain_with_anchor(records: &[AuditRecord], key: &[u8], signature: &str) -> Result<(), String> {
+        Self::verify_chain(records)?;
+        let head = Self::chain_head(records).ok_or_else(|| "empty chain has no head".to_string())?;
+        if !verify_anchor_signature(&head, signature, key) {
+            return Err("anchor signature mismatch — chain was recomputed or key is wrong".into());
         }
         Ok(())
     }
