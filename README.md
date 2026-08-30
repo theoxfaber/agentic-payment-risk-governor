@@ -1,6 +1,6 @@
-# Agentic Payment Risk Governor
+# Razorpay AI Buildathon 2026 — Track 02: AI Risk Manager (Defense-Only) — Agentic Payment Risk Governor
 
-Defense-only verifier for autonomous refund abuse. Agents never hold the Razorpay secret — they post an intent, the governor decides `ALLOW / REVIEW / BLOCK` before money moves.
+> **razorpay-buildathon** · Defense-only verifier for autonomous refund abuse. Agents never hold the Razorpay secret — they post an intent, the governor decides `ALLOW / REVIEW / BLOCK` before money moves. Mini-ADA + mini-Bumblebee + mini-Vulcan for refund abuse — see `docs/adasl.yaml` (AdaDSL hot-reload via NATS) & `docs/RBI_RBA.md`.
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-workspace-dea584?logo=rust)

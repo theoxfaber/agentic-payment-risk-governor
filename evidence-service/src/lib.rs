@@ -81,6 +81,9 @@ impl InMemoryEvidenceStore {
                     blocked_countries: vec![],
                     require_approval_above: 100_000,
                     custom_rules: vec![],
+                    risk_tier: RiskTier::Standard,
+                    pmla_retention_days: 1825,
+                    fri_score: None,
                 },
             );
         }
@@ -132,10 +135,16 @@ impl EvidenceStore for InMemoryEvidenceStore {
     }
 
     async fn record_action(&self, request: &AgentActionRequest) -> Result<(), EvidenceError> {
-        self.action_log
-            .write()
-            .await
-            .push((request.agent_id.clone(), request.timestamp, request.amount));
+        let mut log = self.action_log.write().await;
+        log.push((request.agent_id.clone(), request.timestamp, request.amount));
+        if log.len() > 10_000 {
+            let cutoff = Utc::now() - Duration::hours(24);
+            log.retain(|(_, ts, _)| *ts >= cutoff);
+            if log.len() > 10_000 {
+                let drain = log.len() - 10_000;
+                log.drain(0..drain);
+            }
+        }
         Ok(())
     }
 

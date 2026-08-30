@@ -1,0 +1,26 @@
+# AdaDSL — declarative rules, hot-reload via NATS snapshot topic (like ADA)
+# compiles to both eval-harness check and governor-server live check
+# See: aws.amazon.com/blogs/big-data/how-razorpay-built-real-time-anomaly-detection-with-amazon-msk/
+version: 1
+tenant: merchant-001  # KeyBy(merchant_id)
+rules:
+  refund_abuse:
+    window: 1h
+    baseline: p95
+    deviation: 3σ
+    holiday_adjust: diwali
+    action: BLOCK
+    reason: "refund_abuse 3σ over p95"
+  card_testing:
+    window: 60s
+    pattern: "5 consecutive declines -> success on same card/IP"
+    cep: "5× decline + 1 success same card/IP in 60s"
+    action: BLOCK
+    source: "ADA Flink CEP example"
+  velocity_spike:
+    window: 1h
+    baseline: p95
+    deviation: 5×
+    action: REVIEW
+snapshot_topic: "ada.dsl.snapshot"
+hot_reload: true  # NATS broadcast, no restart

@@ -1,5 +1,6 @@
 use intent_engine::IntentExtractor;
 use risk_governor_types::*;
+use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -85,12 +86,13 @@ impl RiskEngine {
             1.0
         };
 
-        let time_since_last_action_hours = (now_utc() - agent.last_action).num_minutes() as f64 / 60.0;
+        let time_since_last_action_hours =
+            ((now_utc() - agent.last_action).num_minutes() as f64 / 60.0).clamp(0.0, 720.0);
 
         RiskFeatures {
             amount_zscore: amount_zscore.clamp(-5.0, 5.0),
             velocity_zscore: velocity_zscore.clamp(-5.0, 5.0),
-            intent_mismatch_score: 0.0, // calculated separately
+            intent_mismatch_score: 0.0,
             behavioral_drift_score: self.calculate_behavioral_drift(agent, velocity),
             merchant_risk_score: self.calculate_merchant_risk(&evidence.merchant_policy),
             agent_risk_score: self.calculate_agent_risk(agent),
@@ -134,6 +136,26 @@ impl RiskEngine {
         risk.clamp(0.0, 1.0)
     }
 
+    pub fn card_testing_score(&self, v: &VelocityStats) -> f64 {
+        if v.declines_last_hour >= 5 {
+            0.9
+        } else if v.declines_last_hour >= 3 {
+            0.5
+        } else {
+            0.0
+        }
+    }
+    pub fn velocity_spike_score(&self, v: &VelocityStats, agent: &AgentHistory) -> f64 {
+        let expected = (agent.total_actions_30d as f64 / 30.0 / 24.0).max(1.0);
+        if v.actions_last_hour as f64 > expected * 5.0 {
+            0.9
+        } else if v.actions_last_hour as f64 > expected * 3.0 {
+            0.6
+        } else {
+            0.0
+        }
+    }
+
     fn calculate_risk_score(&self, features: &RiskFeatures) -> f64 {
         let weights = [
             (features.amount_zscore.abs() / 5.0, 0.20),
@@ -144,9 +166,19 @@ impl RiskEngine {
             (features.customer_risk_score, 0.10),
             ((features.amount_vs_avg_ratio - 1.0).abs().min(5.0) / 5.0, 0.10),
         ];
-
         let score: f64 = weights.iter().map(|(v, w)| v * w).sum();
         score.clamp(0.0, 1.0)
+    }
+
+    pub fn typology_scores(&self, velocity: &VelocityStats, agent: &AgentHistory) -> HashMap<String, f64> {
+        let mut m = HashMap::new();
+        m.insert("card_testing".into(), self.card_testing_score(velocity));
+        m.insert("velocity_spike".into(), self.velocity_spike_score(velocity, agent));
+        m.insert(
+            "rto_cod".into(),
+            if velocity.rto_signals_24h >= 3 { 0.8 } else { 0.0 },
+        );
+        m
     }
 
     /// Intent mismatch = keyword signals (deterministic) + structured-claim
@@ -268,6 +300,9 @@ mod tests {
                 blocked_countries: vec![],
                 require_approval_above: 100_000,
                 custom_rules: vec![],
+            risk_tier: RiskTier::Standard,
+            pmla_retention_days: 1825,
+            fri_score: None,
             },
             customer_history: None,
             recent_velocity: VelocityStats {

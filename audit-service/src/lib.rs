@@ -97,9 +97,29 @@ impl<S: AuditStore> AuditService<S> {
         Self { store }
     }
 
+    pub fn redact_payload(mut v: serde_json::Value) -> serde_json::Value {
+        if let Some(obj) = v.as_object_mut() {
+            for key in ["email", "phone", "customer_phone", "customer_email"] {
+                if obj.contains_key(key) {
+                    obj.insert(key.to_string(), serde_json::Value::String("***".into()));
+                }
+            }
+            if let Some(pid) = obj.get("payment_id").and_then(|x| x.as_str()).map(|s| s.to_string()) {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(pid.as_bytes());
+                obj.insert("payment_id_sha256".into(), serde_json::Value::String(hex::encode(h.finalize())));
+                obj.remove("payment_id");
+            }
+        }
+        v
+    }
+
     /// Fire-and-forget friendly: errors are logged, never propagated to the caller,
     /// so a slow/full audit sink never blocks or fails a decision.
+    /// DPDP Act: PII is redacted before append — raw `payment_id`/`email`/`phone` never hits the chain.
     pub async fn record(&self, event_type: AuditEventType, decision_id: Option<Uuid>, payload: serde_json::Value) {
+        let payload = Self::redact_payload(payload);
         let record_id = generate_correlation_id();
         let created_at = Utc::now();
         let record = AuditRecord {
@@ -198,6 +218,7 @@ impl<S: AuditStore> AuditService<S> {
 #[async_trait::async_trait]
 impl<S: AuditStore + 'static> action_service::AuditService for AuditService<S> {
     async fn record(&self, mut record: AuditRecord) -> Result<(), action_service::ActionServiceError> {
+        record.payload = Self::redact_payload(record.payload);
         if record.current_hash.is_empty() {
             record.current_hash = AuditRecord::compute_hash(
                 record.record_id,

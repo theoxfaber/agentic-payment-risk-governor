@@ -78,7 +78,9 @@ pub(crate) async fn submit_action(
     // 400, never a 500.
     action_service::validate_request(&request).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
+    let start = std::time::Instant::now();
     let decision = state.svc.process_action(request.clone()).await?;
+    state.metrics.record_latency_ms(start.elapsed().as_secs_f64() * 1000.0);
     if let Some(insight) = &decision.learned_insight {
         state.metrics.record_learned(insight.p_hat, &insight.band);
     }
@@ -90,7 +92,7 @@ pub(crate) async fn submit_action(
     state
         .decisions
         .write()
-        .expect("decisions lock")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(decision.decision_id, decision.clone());
     if let Some(pg) = &state.pg {
         if let Err(e) = pg.upsert_decision(&decision).await {
@@ -110,9 +112,9 @@ pub(crate) async fn list_decisions(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListParams>,
 ) -> Json<serde_json::Value> {
-    let map = state.decisions.read().expect("decisions lock");
+    let map = state.decisions.read().unwrap_or_else(|e| e.into_inner());
     let mut decisions: Vec<&Decision> = map.values().collect();
-    decisions.sort_by_key(|d| d.created_at);
+    decisions.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.decision_id.cmp(&b.decision_id)));
     let offset = params.offset.unwrap_or(0).min(decisions.len());
     let limit = params.limit.unwrap_or(100).clamp(1, 1000);
     let slice = &decisions[offset..(offset + limit).min(decisions.len())];
@@ -171,7 +173,7 @@ pub(crate) async fn replay_decision(
     let decision = state
         .decisions
         .read()
-        .expect("decisions lock")
+        .unwrap_or_else(|e| e.into_inner())
         .get(&decision_id)
         .cloned()
         .ok_or(ApiError::not_found(decision_id))?;
@@ -285,19 +287,17 @@ pub(crate) async fn approve_decision(
     // sees None (404) instead of a stale unreviewed copy — no check-then-act
     // race across the gateway await.
     let mut decision = {
-        let mut map = state.decisions.write().expect("decisions lock");
+        let mut map = state.decisions.write().unwrap_or_else(|e| e.into_inner());
         map.remove(&decision_id).ok_or(ApiError::not_found(decision_id))?
     };
 
-    // Restore-on-reject helper: the claim must go back or the queue loses it.
-    // The error value is built FIRST — it may read from the claim.
     macro_rules! restore_and {
         ($err:expr) => {{
             let err = $err;
             state
                 .decisions
                 .write()
-                .expect("decisions lock")
+                .unwrap_or_else(|e| e.into_inner())
                 .insert(decision_id, decision);
             return Err(err);
         }};
@@ -380,7 +380,7 @@ pub(crate) async fn approve_decision(
     state
         .decisions
         .write()
-        .expect("decisions lock")
+        .unwrap_or_else(|e| e.into_inner())
         .insert(decision_id, decision.clone());
     if let Some(pg) = &state.pg {
         if let Err(e) = pg.upsert_decision(&decision).await {
@@ -617,7 +617,7 @@ mod tests {
         let resolved = state
             .decisions
             .read()
-            .expect("decisions lock")
+            .unwrap_or_else(|e| e.into_inner())
             .get(&decision.decision_id)
             .cloned()
             .expect("resolved decision restored");

@@ -44,6 +44,9 @@ pub(crate) struct Metrics {
     learned_buckets: [std::sync::atomic::AtomicU64; 5],
     learned_reviews: std::sync::atomic::AtomicU64,
     learned_blocks: std::sync::atomic::AtomicU64,
+    latency_buckets: [std::sync::atomic::AtomicU64; 5],
+    latency_sum_ms: std::sync::atomic::AtomicU64,
+    latency_count: std::sync::atomic::AtomicU64,
 }
 
 /// Reference proportions for the score buckets, loaded once from
@@ -110,6 +113,20 @@ impl Metrics {
             "block" => self.learned_blocks.fetch_add(1, Relaxed),
             _ => 0,
         };
+    }
+
+    pub(crate) fn record_latency_ms(&self, ms: f64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let idx = match ms {
+            x if x < 20.0 => 0,
+            x if x < 50.0 => 1,
+            x if x < 100.0 => 2,
+            x if x < 200.0 => 3,
+            _ => 4,
+        };
+        self.latency_buckets[idx].fetch_add(1, Relaxed);
+        self.latency_sum_ms.fetch_add((ms * 1000.0) as u64, Relaxed);
+        self.latency_count.fetch_add(1, Relaxed);
     }
 
     fn bucket_proportions(&self) -> Option<[f64; 5]> {
@@ -198,6 +215,30 @@ impl Metrics {
                     "risk_governor_learned_band_total{{band=\"block\"}} {}\n",
                     self.learned_blocks.load(Relaxed)
                 ));
+            }
+        }
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            let counts: Vec<u64> = self.latency_buckets.iter().map(|b| b.load(Relaxed)).collect();
+            let total: u64 = counts.iter().sum();
+            if total > 0 {
+                let sum_ms = self.latency_sum_ms.load(Relaxed) as f64 / 1000.0;
+                let avg = sum_ms / total as f64;
+                out.push_str(
+                    "# HELP risk_governor_request_duration_ms Request latency (auth window).\n\
+                     # TYPE risk_governor_request_duration_ms histogram\n",
+                );
+                let edges = ["20", "50", "100", "200", "inf"];
+                let mut cum = 0u64;
+                for (edge, c) in edges.iter().zip(counts.iter()) {
+                    cum += c;
+                    out.push_str(&format!(
+                        "risk_governor_request_duration_ms_bucket{{le=\"{edge}\"}} {cum}\n"
+                    ));
+                }
+                out.push_str(&format!("risk_governor_request_duration_ms_sum {sum_ms:.2}\n"));
+                out.push_str(&format!("risk_governor_request_duration_ms_count {total}\n"));
+                out.push_str(&format!("# avg {avg:.2}ms p95 <200ms SLO: Thirdwatch <200ms, ADA <30s\n"));
             }
         }
         out

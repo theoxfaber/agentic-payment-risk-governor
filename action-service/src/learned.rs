@@ -130,8 +130,14 @@ impl LearnedScorer for DefaultLearnedScorer {
         }
         .to_string();
         let mut map = HashMap::new();
+        let mut contrib = HashMap::new();
         for (k, v) in self.model.feature_names.iter().zip(feats.iter()) {
             map.insert(k.clone(), *v);
+        }
+        for (i, k) in self.model.feature_names.iter().enumerate() {
+            let std = self.model.stds[i].max(1e-9);
+            let standardized = (feats[i] - self.model.means[i]) / std;
+            contrib.insert(k.clone(), self.model.weights[i] * standardized);
         }
         LearnedInsight {
             model_version: self.model.version.clone(),
@@ -140,6 +146,7 @@ impl LearnedScorer for DefaultLearnedScorer {
             tau_block: self.tau_block,
             band,
             features: map,
+            contributions: Some(contrib),
         }
     }
 }

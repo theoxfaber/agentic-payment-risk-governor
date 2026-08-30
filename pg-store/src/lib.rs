@@ -152,10 +152,12 @@ impl PgStore {
     }
 
     pub async fn all_decisions(&self) -> Result<Vec<Decision>, AuditError> {
-        let rows = sqlx::query_as::<_, (serde_json::Value,)>("SELECT data FROM decisions ORDER BY created_at ASC")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| AuditError::Write(e.to_string()))?;
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT data FROM decisions ORDER BY created_at ASC, decision_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AuditError::Write(e.to_string()))?;
         rows.into_iter()
             .map(|(v,)| serde_json::from_value(v).map_err(|e| AuditError::Write(e.to_string())))
             .collect()
@@ -242,7 +244,7 @@ impl AuditStore for PgStore {
 
     async fn by_decision(&self, decision_id: Uuid) -> Result<Vec<AuditRecord>, AuditError> {
         let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, serde_json::Value, chrono::DateTime<chrono::Utc>, Option<String>, String)>(
-            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records WHERE decision_id = $1 ORDER BY created_at ASC",
+            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records WHERE decision_id = $1 ORDER BY created_at ASC, record_id ASC",
         )
         .bind(decision_id)
         .fetch_all(&self.pool)
@@ -264,7 +266,7 @@ impl AuditStore for PgStore {
                 String,
             ),
         >(
-            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records ORDER BY created_at ASC",
+            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records ORDER BY created_at ASC, record_id ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -412,6 +414,8 @@ impl EvidenceStore for PgStore {
             volume_last_24h: row.3,
             unique_merchants_24h: 0,
             unique_customers_24h: 0,
+            declines_last_hour: 0,
+            rto_signals_24h: 0,
         })
     }
 }

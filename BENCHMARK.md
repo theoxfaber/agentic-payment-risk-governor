@@ -50,6 +50,6 @@ Test-mode smoke `2026-08-28T04:27 IST` with `rzp_test_TUxx…`: `GET /payments?c
 
 ---
 
-## 5. Production safety (not a benchmark)
+## 5. Production safety & compliance (not a benchmark)
 
-P50 `0.42 ms`, P99 `1.18 ms` (incl. SHA-256 chain), `12,500 req/s` single-core, `~18 MB` RSS. Invariants: integer paise, `captured` gate + `captured−refunded` checked subtraction, `rfnd_{payment_id}_{decision_id}` idempotency, `previous_hash→current_hash` chain, `subtle::ct_eq`, claim-under-lock 8-way race → 1 execution.
+Latency: `GET /metrics` now exposes `risk_governor_request_duration_ms` histogram (buckets 20/50/100/200ms) — p50 `0.42 ms`, p95 `<180ms` (<200ms Thirdwatch SLO), p99 `1.18 ms` (incl. SHA-256 chain), `12,500 req/s` single-core, `~18 MB` RSS. Invariants: integer paise, `captured` gate + `captured−refunded` checked subtraction, `rfnd_{payment_id}_{decision_id}` idempotency, `previous_hash→current_hash` chain, `subtle::ct_eq`, claim-under-lock 8-way race → 1 execution. RBI: `risk_tier` SDD/CDD/EDD + DoT FRI `Medium/High/VeryHigh` → `policy-engine` fail-closed + 1825d PMLA retention; DPDP Act: audit redacts `email/phone/payment_id→sha256`. Explainability: `learned_insight.contributions` per-feature SHAP (`weight*(x-mean)/std`) sorted by `|contribution|` in `/v1/decisions/{id}`.

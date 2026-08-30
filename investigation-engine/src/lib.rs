@@ -89,6 +89,9 @@ pub struct EvidenceItem {
 #[serde(rename_all = "snake_case")]
 pub enum HypothesisKind {
     CoordinatedReturnAbuse,
+    CardTesting,
+    VelocitySpike,
+    RtoAbuse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,6 +385,15 @@ impl Investigator {
             confidence *= 0.75;
         }
         confidence = confidence.clamp(0.0, 1.0);
+
+        if member_behaviors.iter().any(|b| b.distinct_products == 1 && b.account_age_days < 3 && b.order_count >= 3) {
+            supporting.push(EvidenceItem {
+                direction: Direction::Supports,
+                signal: "rto_impulse".into(),
+                description: "single-product, <3d account with ≥3 orders — COD/RTO impulse pattern".into(),
+                weight: 0.2,
+            });
+        }
 
         // --- verdict ---
         let support_weight: f64 = supporting.iter().map(|e| e.weight).sum();
