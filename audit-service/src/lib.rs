@@ -108,7 +108,10 @@ impl<S: AuditStore> AuditService<S> {
                 use sha2::{Digest, Sha256};
                 let mut h = Sha256::new();
                 h.update(pid.as_bytes());
-                obj.insert("payment_id_sha256".into(), serde_json::Value::String(hex::encode(h.finalize())));
+                obj.insert(
+                    "payment_id_sha256".into(),
+                    serde_json::Value::String(hex::encode(h.finalize())),
+                );
                 obj.remove("payment_id");
             }
         }

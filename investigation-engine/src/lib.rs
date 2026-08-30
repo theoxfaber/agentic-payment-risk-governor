@@ -386,7 +386,10 @@ impl Investigator {
         }
         confidence = confidence.clamp(0.0, 1.0);
 
-        if member_behaviors.iter().any(|b| b.distinct_products == 1 && b.account_age_days < 3 && b.order_count >= 3) {
+        if member_behaviors
+            .iter()
+            .any(|b| b.distinct_products == 1 && b.account_age_days < 3 && b.order_count >= 3)
+        {
             supporting.push(EvidenceItem {
                 direction: Direction::Supports,
                 signal: "rto_impulse".into(),

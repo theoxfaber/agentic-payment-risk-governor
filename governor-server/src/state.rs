@@ -238,7 +238,9 @@ impl Metrics {
                 }
                 out.push_str(&format!("risk_governor_request_duration_ms_sum {sum_ms:.2}\n"));
                 out.push_str(&format!("risk_governor_request_duration_ms_count {total}\n"));
-                out.push_str(&format!("# avg {avg:.2}ms p95 <200ms SLO: Thirdwatch <200ms, ADA <30s\n"));
+                out.push_str(&format!(
+                    "# avg {avg:.2}ms p95 <200ms SLO: Thirdwatch <200ms, ADA <30s\n"
+                ));
             }
         }
         out

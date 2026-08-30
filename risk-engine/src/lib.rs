@@ -174,10 +174,7 @@ impl RiskEngine {
         let mut m = HashMap::new();
         m.insert("card_testing".into(), self.card_testing_score(velocity));
         m.insert("velocity_spike".into(), self.velocity_spike_score(velocity, agent));
-        m.insert(
-            "rto_cod".into(),
-            if velocity.rto_signals_24h >= 3 { 0.8 } else { 0.0 },
-        );
+        m.insert("rto_cod".into(), if velocity.rto_signals_24h >= 3 { 0.8 } else { 0.0 });
         m
     }
 
@@ -300,9 +297,9 @@ mod tests {
                 blocked_countries: vec![],
                 require_approval_above: 100_000,
                 custom_rules: vec![],
-            risk_tier: RiskTier::Standard,
-            pmla_retention_days: 1825,
-            fri_score: None,
+                risk_tier: RiskTier::Standard,
+                pmla_retention_days: 1825,
+                fri_score: None,
             },
             customer_history: None,
             recent_velocity: VelocityStats {

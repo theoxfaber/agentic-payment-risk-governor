@@ -78,9 +78,9 @@ pub(crate) async fn seed_demo_entities(store: &EvidenceBackend) -> Result<(), an
                 blocked_countries: vec![],
                 require_approval_above: 100_000,
                 custom_rules: vec![],
-            risk_tier: RiskTier::Standard,
-            pmla_retention_days: 1825,
-            fri_score: None,
+                risk_tier: RiskTier::Standard,
+                pmla_retention_days: 1825,
+                fri_score: None,
             };
             seed.insert(
                 "merchants".into(),

@@ -35,7 +35,10 @@ impl PolicyEngine {
                 )),
                 67..=89 => {
                     if policy.risk_tier == RiskTier::Standard || policy.risk_tier == RiskTier::Medium {
-                        violated_thresholds.push(format!("FRI high ({fri}) requires EDD — risk_tier {:?} insufficient", policy.risk_tier));
+                        violated_thresholds.push(format!(
+                            "FRI high ({fri}) requires EDD — risk_tier {:?} insufficient",
+                            policy.risk_tier
+                        ));
                     }
                 }
                 90..=100 => violated_thresholds.push(format!("FRI VeryHigh ({fri}) — DoT block, RBI EDD/STR required")),
@@ -43,7 +46,10 @@ impl PolicyEngine {
             }
         }
         if policy.pmla_retention_days < 1825 {
-            violated_thresholds.push(format!("PMLA retention {}d < 1825d — RBI Master KYC Jun 12 2025 violation", policy.pmla_retention_days));
+            violated_thresholds.push(format!(
+                "PMLA retention {}d < 1825d — RBI Master KYC Jun 12 2025 violation",
+                policy.pmla_retention_days
+            ));
         }
 
         // Check amount thresholds — all amounts are integer paise (i64), no floats
