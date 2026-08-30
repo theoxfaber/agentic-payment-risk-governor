@@ -130,15 +130,22 @@ impl LearnedScorer for DefaultLearnedScorer {
         }
         .to_string();
         let mut map = HashMap::new();
-        let mut contrib = HashMap::new();
         for (k, v) in self.model.feature_names.iter().zip(feats.iter()) {
             map.insert(k.clone(), *v);
         }
-        for (i, k) in self.model.feature_names.iter().enumerate() {
-            let std = self.model.stds[i].max(1e-9);
-            let standardized = (feats[i] - self.model.means[i]) / std;
-            contrib.insert(k.clone(), self.model.weights[i] * standardized);
-        }
+        let mut contrib_vec: Vec<(String, f64)> = self
+            .model
+            .feature_names
+            .iter()
+            .enumerate()
+            .map(|(i, k)| {
+                let std = self.model.stds[i].max(1e-9);
+                let standardized = (feats[i] - self.model.means[i]) / std;
+                (k.clone(), self.model.weights[i] * standardized)
+            })
+            .collect();
+        contrib_vec.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap_or(std::cmp::Ordering::Equal));
+        let contrib: HashMap<String, f64> = contrib_vec.into_iter().collect();
         LearnedInsight {
             model_version: self.model.version.clone(),
             p_hat,

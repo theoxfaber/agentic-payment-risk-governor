@@ -1,5 +1,6 @@
-# AdaDSL — declarative rules, hot-reload via NATS snapshot topic (like ADA)
-# compiles to both eval-harness check and governor-server live check
+# AdaDSL SPEC — declarative rules (hot-reload planned, not yet wired)
+# Current: static YAML compiled to both eval-harness check and live check
+# Planned: NATS snapshot topic ada.dsl.snapshot → Flink-like broadcast hot-reload (like ADA)
 # See: aws.amazon.com/blogs/big-data/how-razorpay-built-real-time-anomaly-detection-with-amazon-msk/
 version: 1
 tenant: merchant-001  # KeyBy(merchant_id)
@@ -23,4 +24,4 @@ rules:
     deviation: 5×
     action: REVIEW
 snapshot_topic: "ada.dsl.snapshot"
-hot_reload: true  # NATS broadcast, no restart
+hot_reload: planned  # TODO: nats-link subscribe("ada.dsl.snapshot", |msg| reload_rules(msg))

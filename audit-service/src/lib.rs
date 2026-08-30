@@ -97,25 +97,34 @@ impl<S: AuditStore> AuditService<S> {
         Self { store }
     }
 
-    pub fn redact_payload(mut v: serde_json::Value) -> serde_json::Value {
-        if let Some(obj) = v.as_object_mut() {
-            for key in ["email", "phone", "customer_phone", "customer_email"] {
-                if obj.contains_key(key) {
-                    obj.insert(key.to_string(), serde_json::Value::String("***".into()));
+    pub fn redact_payload(v: serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(mut m) => {
+                let mut out = serde_json::Map::new();
+                for (k, val) in m.into_iter() {
+                    if ["email", "phone", "customer_phone", "customer_email"].contains(&k.as_str()) {
+                        out.insert(k, serde_json::Value::String("***".into()));
+                    } else if k == "payment_id" {
+                        if let Some(s) = val.as_str() {
+                            use sha2::{Digest, Sha256};
+                            let mut h = Sha256::new();
+                            h.update(s.as_bytes());
+                            out.insert(
+                                "payment_id_sha256".into(),
+                                serde_json::Value::String(hex::encode(h.finalize())),
+                            );
+                        }
+                    } else {
+                        out.insert(k.clone(), Self::redact_payload(val));
+                    }
                 }
+                serde_json::Value::Object(out)
             }
-            if let Some(pid) = obj.get("payment_id").and_then(|x| x.as_str()).map(|s| s.to_string()) {
-                use sha2::{Digest, Sha256};
-                let mut h = Sha256::new();
-                h.update(pid.as_bytes());
-                obj.insert(
-                    "payment_id_sha256".into(),
-                    serde_json::Value::String(hex::encode(h.finalize())),
-                );
-                obj.remove("payment_id");
+            serde_json::Value::Array(arr) => {
+                serde_json::Value::Array(arr.into_iter().map(Self::redact_payload).collect())
             }
+            other => other,
         }
-        v
     }
 
     /// Fire-and-forget friendly: errors are logged, never propagated to the caller,

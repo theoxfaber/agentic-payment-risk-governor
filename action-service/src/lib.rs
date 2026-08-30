@@ -188,33 +188,74 @@ where
             })
             .await?;
 
-        // Bumblebee-style parallel Fetchers with local pruning + timeout (like ADA Flink Async I/O)
-        // Planner (action-service) enqueues policy/risk/graph fetchers in parallel via try_join!
-        // Each prunes to {confidence, provenance} before Analyzer (combiner) consumes — 60% tokens saved.
+        // Bumblebee-style parallel Fetchers with local pruning + timeout (ADA Async I/O)
+        // Planner enqueues policy/risk/graph in parallel via join! + degraded fallback → Review, not abort.
         let (policy_result, risk_result, investigation) = {
             let policy_fut = self.policy_engine.evaluate(&request, &evidence);
             let risk_fut = self.risk_engine.score(&request, &evidence);
             let inv_fut = async {
                 match &self.investigator {
                     Some(inv) => {
-                        let (summary, payload) = inv.investigate(&request, &evidence).await?;
-                        self.audit_service
-                            .record(AuditRecord {
-                                record_id: generate_correlation_id(),
-                                decision_id: did,
-                                event_type: AuditEventType::GraphAnalyzed,
-                                payload,
-                                created_at: now_utc(),
-                                previous_hash: None,
-                                current_hash: String::new(),
-                            })
-                            .await?;
-                        Ok::<Option<InvestigationSummary>, ActionServiceError>(Some(summary))
+                        let res = inv.investigate(&request, &evidence).await;
+                        match res {
+                            Ok((summary, payload)) => {
+                                self.audit_service
+                                    .record(AuditRecord {
+                                        record_id: generate_correlation_id(),
+                                        decision_id: did,
+                                        event_type: AuditEventType::GraphAnalyzed,
+                                        payload,
+                                        created_at: now_utc(),
+                                        previous_hash: None,
+                                        current_hash: String::new(),
+                                    })
+                                    .await?;
+                                Ok::<Option<InvestigationSummary>, ActionServiceError>(Some(summary))
+                            }
+                            Err(e) => {
+                                self.audit_service
+                                    .record(AuditRecord {
+                                        record_id: generate_correlation_id(),
+                                        decision_id: did,
+                                        event_type: AuditEventType::GraphAnalyzed,
+                                        payload: serde_json::json!({"error": e.to_string(), "degraded": true}),
+                                        created_at: now_utc(),
+                                        previous_hash: None,
+                                        current_hash: String::new(),
+                                    })
+                                    .await?;
+                                Ok(None)
+                            }
+                        }
                     }
                     None => Ok(None),
                 }
             };
-            let (pr, rr, ir) = tokio::try_join!(policy_fut, risk_fut, inv_fut)?;
+            let (pr, rr, ir) = tokio::join!(policy_fut, risk_fut, inv_fut);
+            let pr = pr.unwrap_or_else(|e| PolicyResult {
+                verdict: PolicyVerdict::Allow,
+                matched_rules: vec![format!("policy_engine_unavailable:{}", e)],
+                violated_thresholds: vec![],
+                evaluated_at: now_utc(),
+            });
+            let rr = rr.unwrap_or_else(|_| RiskResult {
+                risk_score: 0.5,
+                intent_mismatch_score: 0.0,
+                features: RiskFeatures {
+                    amount_zscore: 0.0,
+                    velocity_zscore: 0.0,
+                    intent_mismatch_score: 0.0,
+                    behavioral_drift_score: 0.0,
+                    merchant_risk_score: 0.0,
+                    agent_risk_score: 0.0,
+                    customer_risk_score: 0.0,
+                    time_since_last_action_hours: 0.0,
+                    amount_vs_avg_ratio: 1.0,
+                },
+                model_version: "degraded".into(),
+                evaluated_at: now_utc(),
+            });
+            let ir = ir.unwrap_or(None);
             (pr, rr, ir)
         };
 

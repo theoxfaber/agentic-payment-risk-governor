@@ -40,7 +40,13 @@ impl RiskEngine {
         evidence: &Evidence,
     ) -> Result<RiskResult, RiskEngineError> {
         let features = self.extract_features(request, evidence);
-        let risk_score = self.calculate_risk_score(&features);
+        let mut risk_score = self.calculate_risk_score(&features);
+        for v in self
+            .typology_scores(&evidence.recent_velocity, &evidence.agent_history)
+            .values()
+        {
+            risk_score = (risk_score + v * 0.05).clamp(0.0, 1.0);
+        }
         let claims = match &self.intent_extractor {
             Some(ex) => Some(
                 ex.extract(&request.declared_intent, request.action_type, request.amount)
