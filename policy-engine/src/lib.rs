@@ -171,13 +171,24 @@ impl PolicyEngine {
                     }
                 }
                 if let Some(n) = v.as_u64() {
-                    return Some(n as i64);
+                    if let Ok(conv) = i64::try_from(n) {
+                        return Some(conv);
+                    }
                 }
             }
-            // support nested payment object: context.payment.amount etc
             if let Some(obj) = ctx.get("payment").and_then(|p| p.get(*k)) {
                 if let Some(n) = obj.as_i64() {
                     return Some(n);
+                }
+                if let Some(s) = obj.as_str() {
+                    if let Ok(n) = s.parse::<i64>() {
+                        return Some(n);
+                    }
+                }
+                if let Some(n) = obj.as_u64() {
+                    if let Ok(conv) = i64::try_from(n) {
+                        return Some(conv);
+                    }
                 }
             }
         }
