@@ -99,7 +99,7 @@ impl<S: AuditStore> AuditService<S> {
 
     pub fn redact_payload(v: serde_json::Value) -> serde_json::Value {
         match v {
-            serde_json::Value::Object(mut m) => {
+            serde_json::Value::Object(m) => {
                 let mut out = serde_json::Map::new();
                 for (k, val) in m.into_iter() {
                     if ["email", "phone", "customer_phone", "customer_email"].contains(&k.as_str()) {
