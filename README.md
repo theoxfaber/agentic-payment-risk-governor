@@ -93,6 +93,7 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 | `GET` | `/v1/decisions/{id}` | yes | replay + audit trail |
 | `POST` | `/v1/decisions/{id}/approve` | yes | human allow/block, once |
 | `GET` | `/v1/audit/verify` · `/v1/audit/anchor` | yes | chain + HMAC |
+| `GET` | `/v1/real/analysis?count=20` | yes | **Real Razorpay test data** — live `GET /v1/payments` + risk flags (requires `RAZORPAY_KEY_ID/SECRET`, replaces synthetic for demo) |
 | `POST` | `/webhooks/razorpay` | no* | HMAC verified (*`WEBHOOK_SECRET`) |
 | `GET` | `/health` · `/metrics` · `/` | no | liveness, Prometheus, console |
 

@@ -258,6 +258,63 @@ pub(crate) async fn audit_anchor(State(state): State<Arc<AppState>>) -> Json<ser
     }
 }
 
+#[derive(Deserialize)]
+pub(crate) struct RealParams {
+    pub count: Option<usize>,
+}
+
+pub(crate) async fn real_analysis(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RealParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let count = params.count.unwrap_or(20).clamp(1, 100);
+    let raw = state
+        .gateway
+        .fetch_real_payments(count)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let items = raw.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let total: i64 = items
+        .iter()
+        .filter_map(|p| p.get("amount").and_then(|v| v.as_i64()))
+        .sum();
+    let avg = if items.is_empty() {
+        0
+    } else {
+        total / items.len() as i64
+    };
+    let analysis: Vec<serde_json::Value> = items
+        .iter()
+        .map(|p| {
+            let amt = p.get("amount").and_then(|v| v.as_i64()).unwrap_or(0);
+            let status = p.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let risk = if amt > avg * 3 {
+                "high"
+            } else if amt > avg * 2 {
+                "medium"
+            } else {
+                "low"
+            };
+            serde_json::json!({
+                "id": p.get("id"),
+                "amount_paise": amt,
+                "amount_inr": amt as f64 / 100.0,
+                "status": status,
+                "risk_flag": risk,
+                "raw": p
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "source": "razorpay_test",
+        "count": items.len(),
+        "total_paise": total,
+        "avg_paise": avg,
+        "payments": analysis,
+        "note": "Real Razorpay test-mode data — replaces synthetic dataset-gen for live analysis. Requires RAZORPAY_KEY_ID/SECRET."
+    })))
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct ApproveBody {
     pub approved: bool,

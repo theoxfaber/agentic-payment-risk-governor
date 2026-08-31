@@ -51,6 +51,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/decisions/:id/approve", post(routes::approve_decision))
         .route("/v1/audit/verify", get(routes::verify_audit_chain))
         .route("/v1/audit/anchor", get(routes::audit_anchor))
+        .route("/v1/real/analysis", get(routes::real_analysis))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,

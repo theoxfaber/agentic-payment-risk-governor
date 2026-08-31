@@ -119,6 +119,20 @@ impl RazorpayGateway for Gateway {
     }
 }
 
+impl Gateway {
+    pub(crate) async fn fetch_real_payments(&self, count: usize) -> Result<serde_json::Value, ActionServiceError> {
+        match self {
+            Gateway::Http(h) => h
+                .get_json(&format!("/payments?count={count}"))
+                .await
+                .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string())),
+            Gateway::Mock(_) => Err(ActionServiceError::RazorpayGateway(
+                "real data requires RAZORPAY_KEY_ID/SECRET (MockGateway has no live data)".into(),
+            )),
+        }
+    }
+}
+
 pub(crate) fn pick_gateway() -> Arc<Gateway> {
     match (std::env::var("RAZORPAY_KEY_ID"), std::env::var("RAZORPAY_KEY_SECRET")) {
         (Ok(id), Ok(secret)) if !id.is_empty() && !secret.is_empty() => {
