@@ -8,10 +8,12 @@
     <a href="https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml"><img src="https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <img src="https://img.shields.io/badge/Rust-workspace-dea584?logo=rust" alt="Rust">
     <img src="https://img.shields.io/badge/tests-205%20passing-1a7f37" alt="Tests">
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License"></a><br>
-    <a href="https://agentic-payment-risk-governor.vercel.app"><img src="https://img.shields.io/badge/demo-live%20on%20Vercel-black?logo=vercel" alt="Vercel"></a>
-    <em>Live demo → <a href="https://agentic-payment-risk-governor.vercel.app">agentic-payment-risk-governor.vercel.app</a> (frontend) + local backend `cargo run -p governor-server`</em>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License"></a>
   </p>
+</p>
+
+<p align="center">
+  <em>Frontend: <code>dashboard-v2</code> — deploy to Vercel via GitHub import (Root: <code>dashboard-v2</code>). Backend: <code>cargo run -p governor-server</code> serves the same build at <code>/</code>.</em>
 </p>
 
 > **In one sentence:** An AI assistant wants to refund money. It has to ask this gateway first. The gateway checks the request, decides, and writes down why — then says ALLOW, REVIEW, or BLOCK.
