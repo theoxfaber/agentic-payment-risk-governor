@@ -100,5 +100,5 @@ export const api = {
   },
 }
 
-export const fmtINR = (p: number) => '₹' + p.toLocaleString('en-IN')
+export const fmtINR = (p: number) => '₹' + (p / 100).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
 export const fmtTime = (iso: string) => new Date(iso).toLocaleTimeString()
