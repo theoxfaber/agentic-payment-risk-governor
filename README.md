@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-209%20passing-1a7f37)
+![Tests](https://img.shields.io/badge/tests-205%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
 > **One line for everyone:** An AI agent wants to refund money. It must ask this safety gateway first. The gateway checks the rules, the risk, and whether the customers are linked — then says `ALLOW` (pay), `REVIEW` (human checks), or `BLOCK` (no). No secret ever leaves the gateway.
