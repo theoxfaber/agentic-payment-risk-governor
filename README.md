@@ -11,18 +11,21 @@
 
 ## For non-engineers — 2 minutes
 
-**The problem (Track 02):** Letting an AI agent call Razorpay directly is like giving it your bank password. One bug or trick = real money lost. You need a *defense-only* checker that cannot be used to attack — it only says “stop” or “wait for a human”.
+Imagine you let an AI assistant handle refunds. If it can call your payment system directly, a single mistake or tricked instruction could send real money the wrong way.
 
-**How this works — 3 steps:**
-1. **Agent asks, doesn’t act.** It sends: “I want to refund ₹50 for order #123, payment `pay_O9x...`”. It never sees the Razorpay key.
-2. **Gateway checks 4 things in parallel (<180ms):** Is the payment really captured and is there enough balance? Is this amount/velocity weird? Are the customers linked by same device/address/card (like finding a fraud ring)? Does the story contradict the numbers? If anything is missing or looks off → `BLOCK` or `REVIEW`, never silent `ALLOW`.
-3. **Money moves at most once, and everything is auditable.** If `ALLOW`, the gateway calls Razorpay with a unique idempotency key (`rfnd_{payment}_{decision}`) and stamps the refund receipt with the decision id — so even a network glitch can’t double-pay. Every step is hash-chained (like a ledger) and HMAC-anchored; `GET /v1/decisions/{id}` replays *why* it decided.
+This gateway sits in between. The agent never holds your Razorpay key. It has to ask first, in plain words: “I want to refund ₹50 for order #123.” The gateway checks the request, decides, and writes down why.
 
-**Try it (no code):** Open `http://127.0.0.1:8080` → dashboard → “New Action” → pick `trusted → small refund = ALLOW`, `large refund = REVIEW → Approve = 1 execution`, `above max = BLOCK`. `./demo.sh` does the same in terminal.
+How it decides, in three steps:
 
-**Honest numbers (synthetic, not real fraud):** On 3 unseen held-out seeds, investigation catches 100% of abuse with ₹0 false-positive cost; households sharing a laptop are not flagged (0/972). Degrading data routes more to humans (1%→59% review) instead of missing fraud. Source `cargo run -p eval-harness` → `BENCHMARK.md`.
+1. **The agent asks, it doesn’t act.** It describes what it wants to do, never touching money itself.
+2. **The gateway checks.** Is the payment real and is there enough money left to refund? Does the amount or frequency look unusual? Are these customers linked together in a way that looks like a fraud ring? Does the agent’s story match the numbers? If anything is missing or odd, it says “no” or “let a person check” — it never quietly says “yes”.
+3. **Money only moves once, and you can see why.** If the answer is yes, the gateway makes the payment and records every step so you can replay the decision later.
 
-> Defense-only: no bypass, no credential harvesting — it only blocks or asks a human. That’s the Buildathon bar.
+You can try it without code: open the dashboard, try a small trusted refund, a large one that needs approval, and one that is blocked.
+
+> This is defense-only: it can only stop or ask a human, never help an attack. That’s the requirement for Track 02.
+
+Technical details below — the next sections are for engineers and can be as dense as needed.
 
 ---
 
@@ -32,12 +35,12 @@
 git clone https://github.com/theoxfaber/agentic-payment-risk-governor
 cd agentic-payment-risk-governor
 
-cargo test --workspace          # 209 tests, offline, no credentials
+cargo test --workspace          # offline, no credentials
 cargo run --release -p governor-server -- --port 8080
 # http://127.0.0.1:8080         triage console
-# http://127.0.0.1:8080/metrics  Prometheus (includes p95 <180ms histogram)
+# http://127.0.0.1:8080/metrics  Prometheus
 
-./demo.sh                       # ALLOW → REVIEW (+ approve) → BLOCK → payout, with replay
+./demo.sh                       # runs the three cases with replay
 ```
 
 MCP for any agent:
@@ -61,18 +64,16 @@ Agent (no keys) -- HTTP + X-API-Key --> Governor Server (Rust) -- HTTPS + rzp_te
                                          └─ at-most-once: unique key + “was I pending?” + receipt probe
 ```
 
-Flow: `action_requested → policy_evaluated → risk_scored → graph_analyzed → decision_made → human_reviewed → razorpay_called`
+The system checks the payment, scores how unusual it looks, looks for linked accounts, and investigates the evidence. If anything is missing or contradictory it asks a human instead of quietly allowing.
 
 | Plane | What it checks | If it fails |
 |---|---|---|
 | Policy | max refund, velocity, country, `payment_state == captured`, `amount ≤ captured − refunded` | `BLOCK` |
-| Risk | how weird is amount/velocity, drift (PSI), does story match numbers | score 0–1 |
-| Graph | are customers linked by device / address / card (union-find) | cluster |
+| Risk | how weird is amount/velocity, drift, does story match numbers | score 0–1 |
+| Graph | are customers linked by device / address / card | cluster |
 | Investigation | evidence for vs against (household defense), confidence | `REVIEW` if conflict/thin |
 
-High-risk + contradiction → human. Missing data → `REVIEW` (never silent `ALLOW`).
-
-Visual board: [`docs/architecture.excalidraw`](docs/architecture.excalidraw) — top flow for non-technical, bottom layer for engineers. Production pattern: mini-ADA (streaming) + mini-Bumblebee (parallel fetchers) + mini-Vulcan (merchant-tunable thresholds). See `docs/adasl.yaml` (AdaDSL hot-reload via NATS) & `docs/RBI_RBA.md` (RBI tiers, FRI, PMLA, DPDP).
+Visual board: [`docs/architecture.excalidraw`](docs/architecture.excalidraw) — top flow for non-technical, bottom layer for engineers. Architecture patterns are borrowed from known fraud-detection systems — see `docs/adasl.yaml` and `docs/RBI_RBA.md` for details.
 
 ---
 
@@ -120,7 +121,7 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 
 **Live smoke (test-mode, partial):** `auth OK + order_TUyv0Ib1swX7ki` live; `/payments/create/json` is `404` (deprecated) → refund path covered by `HttpGateway` tests. Reproduce: `RAZORPAY_KEY_ID=rzp_test_... cargo run -p razorpay-gateway --bin rzp_smoke`
 
-**Offline suite:** `cargo test --workspace` (209), `financial_invariants`, `test_adversarial_concurrency` (8-way → 1), `learned_escalation_blocks_before_gateway` (0 calls on BLOCK). Coverage `cargo llvm-cov --workspace --fail-under-lines 60`.
+**Offline suite:** `cargo test --workspace`, `financial_invariants`, `test_adversarial_concurrency` (8-way race with one winner), `learned_escalation_blocks_before_gateway`. Coverage `cargo llvm-cov --workspace --fail-under-lines 60`.
 
 **Held-out (synthetic, machinery check):** calibration `2026`, held-out `31415/27182/16180`.
 
