@@ -27,6 +27,7 @@ mod state;
 
 use auth::resolve_api_key;
 use axum::{
+    extract::DefaultBodyLimit,
     routing::{get, post},
     Router,
 };
@@ -49,6 +50,9 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/v1/decisions", get(routes::list_decisions))
         .route("/v1/decisions/:id", get(routes::replay_decision))
         .route("/v1/decisions/:id/approve", post(routes::approve_decision))
+        .route("/v1/audit/verify", get(routes::verify_audit_chain))
+        .route("/v1/audit/anchor", get(routes::audit_anchor))
+        .route("/v1/real/analysis", get(routes::real_analysis))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_api_key,
@@ -61,8 +65,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/dashboard", get(routes::dashboard_page))
         .route("/health", get(routes::health))
         .route("/metrics", get(routes::metrics))
+        .route("/webhooks/razorpay", post(routes::razorpay_webhook))
         .nest_service("/assets", assets)
         .merge(protected)
+        .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state)
 }
 
@@ -157,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let (graph, behaviors) = default_graph_and_behaviors();
-    let investigator = GraphInvestigator::new(graph, behaviors, HashMap::new(), Baseline::default());
+    let investigator = GraphInvestigator::new(graph.clone(), behaviors.clone(), HashMap::new(), Baseline::default());
 
     let svc = Arc::new(
         action_service::ActionService::new(
@@ -167,8 +173,25 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(audit_service::AuditService::new(Arc::new(audit_backend.clone()))),
             gateway.clone(),
         )
-        .with_investigator(investigator.into_trait()),
+        .with_investigator(investigator.into_trait())
+        .with_learned_scorer(Arc::new(action_service::learned::DefaultLearnedScorer::from_embedded())),
     );
+
+    let anchor_key = std::env::var("AUDIT_SIGNING_KEY")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.into_bytes());
+    if anchor_key.is_some() {
+        tracing::info!("audit anchor: HMAC signing enabled (AUDIT_SIGNING_KEY set)");
+    } else {
+        tracing::info!("audit anchor: no AUDIT_SIGNING_KEY — chain is tamper-evident but not externally anchored; set AUDIT_SIGNING_KEY for HMAC-anchored verification");
+    }
+    let webhook_secret = std::env::var("WEBHOOK_SECRET").ok().filter(|s| !s.is_empty());
+    if webhook_secret.is_some() {
+        tracing::info!("webhook: Razorpay webhook verification enabled");
+    } else {
+        tracing::info!("webhook: no WEBHOOK_SECRET — /webhooks/razorpay will reject");
+    }
 
     let state = Arc::new(AppState {
         svc,
@@ -178,6 +201,10 @@ async fn main() -> anyhow::Result<()> {
         metrics: Arc::new(Metrics::default()),
         pg,
         api_key: resolve_api_key(),
+        anchor_key,
+        webhook_secret,
+        graph,
+        behaviors,
     });
 
     let app = build_router(state);

@@ -236,7 +236,11 @@ pub fn evaluate_split(world: &World, detector: &mut dyn Detector, split: &'stati
     }
 
     let precision = if tp + fp == 0 {
-        1.0
+        if tp == 0 && fp == 0 && tn > 0 {
+            0.0
+        } else {
+            1.0
+        }
     } else {
         tp as f64 / (tp + fp) as f64
     };

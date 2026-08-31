@@ -27,6 +27,31 @@ impl PolicyEngine {
 
         let policy = &evidence.merchant_policy;
 
+        if let Some(fri) = policy.fri_score {
+            match fri {
+                0..=33 => {}
+                34..=66 if policy.risk_tier == RiskTier::Standard => violated_thresholds.push(format!(
+                    "FRI medium ({fri}) requires risk_tier >= Medium — RBI CDD missing (fail-closed)"
+                )),
+                67..=89 => {
+                    if policy.risk_tier == RiskTier::Standard || policy.risk_tier == RiskTier::Medium {
+                        violated_thresholds.push(format!(
+                            "FRI high ({fri}) requires EDD — risk_tier {:?} insufficient",
+                            policy.risk_tier
+                        ));
+                    }
+                }
+                90..=100 => violated_thresholds.push(format!("FRI VeryHigh ({fri}) — DoT block, RBI EDD/STR required")),
+                _ => violated_thresholds.push(format!("FRI score {fri} out of range")),
+            }
+        }
+        if policy.pmla_retention_days < 1825 {
+            violated_thresholds.push(format!(
+                "PMLA retention {}d < 1825d — RBI Master KYC Jun 12 2025 violation",
+                policy.pmla_retention_days
+            ));
+        }
+
         // Check amount thresholds — all amounts are integer paise (i64), no floats
         match request.action_type {
             ActionType::Refund => {
@@ -159,6 +184,14 @@ impl PolicyEngine {
         })
     }
 
+    fn parse_paise(s: &str) -> Option<i64> {
+        let cleaned: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
+        if cleaned.is_empty() || cleaned == "-" {
+            return None;
+        }
+        cleaned.parse::<i64>().ok()
+    }
+
     fn extract_paise(ctx: &serde_json::Value, keys: &[&str]) -> Option<i64> {
         for k in keys {
             if let Some(v) = ctx.get(*k) {
@@ -166,18 +199,29 @@ impl PolicyEngine {
                     return Some(n);
                 }
                 if let Some(s) = v.as_str() {
-                    if let Ok(n) = s.parse::<i64>() {
+                    if let Some(n) = Self::parse_paise(s) {
                         return Some(n);
                     }
                 }
                 if let Some(n) = v.as_u64() {
-                    return Some(n as i64);
+                    if let Ok(conv) = i64::try_from(n) {
+                        return Some(conv);
+                    }
                 }
             }
-            // support nested payment object: context.payment.amount etc
             if let Some(obj) = ctx.get("payment").and_then(|p| p.get(*k)) {
                 if let Some(n) = obj.as_i64() {
                     return Some(n);
+                }
+                if let Some(s) = obj.as_str() {
+                    if let Some(n) = Self::parse_paise(s) {
+                        return Some(n);
+                    }
+                }
+                if let Some(n) = obj.as_u64() {
+                    if let Ok(conv) = i64::try_from(n) {
+                        return Some(conv);
+                    }
                 }
             }
         }
@@ -195,10 +239,17 @@ impl PolicyEngine {
         // never silently false.
         match rule.condition.as_str() {
             "amount_gt_avg_3x" => {
-                if request.amount as f64 > evidence.agent_history.avg_amount as f64 * 3.0 {
-                    CustomRuleOutcome::Triggered
-                } else {
+                let avg = evidence.agent_history.avg_amount;
+                if avg <= 0 {
                     CustomRuleOutcome::NotTriggered
+                } else if let Some(thresh) = avg.checked_mul(3) {
+                    if request.amount > thresh {
+                        CustomRuleOutcome::Triggered
+                    } else {
+                        CustomRuleOutcome::NotTriggered
+                    }
+                } else {
+                    CustomRuleOutcome::Triggered
                 }
             }
             "refund_rate_gt_10pct" => {
@@ -277,6 +328,9 @@ mod tests {
             blocked_countries: vec![],
             require_approval_above: 100_000,
             custom_rules: vec![],
+            risk_tier: RiskTier::Standard,
+            pmla_retention_days: 1825,
+            fri_score: None,
         }
     }
 

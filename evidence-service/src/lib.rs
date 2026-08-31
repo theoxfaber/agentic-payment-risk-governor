@@ -88,6 +88,9 @@ impl InMemoryEvidenceStore {
                     blocked_countries: vec![],
                     require_approval_above: 100_000,
                     custom_rules: vec![],
+                    risk_tier: RiskTier::Standard,
+                    pmla_retention_days: 1825,
+                    fri_score: None,
                 },
             );
         }

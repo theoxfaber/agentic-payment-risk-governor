@@ -17,6 +17,7 @@ pub(crate) type Svc = ActionService<
     Gateway,
 >;
 
+#[allow(dead_code)]
 pub(crate) struct AppState {
     pub svc: Arc<Svc>,
     pub audit: Arc<AuditService<AuditBackend>>,
@@ -27,12 +28,12 @@ pub(crate) struct AppState {
     /// survive in Postgres. Prevents unbounded memory growth in production.
     pub decisions: RwLock<lru::LruCache<Uuid, Decision>>,
     pub metrics: Arc<Metrics>,
-    /// Set when DATABASE_URL is configured: decisions are write-through
-    /// persisted here and hydrated from it at boot.
     pub pg: Option<Arc<pg_store::PgStore>>,
-    /// Required on every /v1/* route. From GOVERNOR_API_KEY, or an ephemeral
-    /// generated key printed at boot (local dev/demo) — never "no auth".
     pub api_key: String,
+    pub anchor_key: Option<Vec<u8>>,
+    pub webhook_secret: Option<String>,
+    pub graph: Arc<risk_graph::PropertyGraph>,
+    pub behaviors: HashMap<String, investigation_engine::CustomerBehavior>,
 }
 
 /// Counters exposed at /metrics in Prometheus text format.
@@ -42,10 +43,13 @@ pub(crate) struct Metrics {
     decisions_review: std::sync::atomic::AtomicU64,
     decisions_block: std::sync::atomic::AtomicU64,
     gateway_executions: std::sync::atomic::AtomicU64,
-    /// Risk-score histogram over five buckets ([0,.2),…,[.8,1]). Prediction
-    /// drift is the earliest observable signal of concept drift while fraud
-    /// labels are still maturing — watch PSI on this before recall moves.
     score_buckets: [std::sync::atomic::AtomicU64; 5],
+    learned_buckets: [std::sync::atomic::AtomicU64; 5],
+    learned_reviews: std::sync::atomic::AtomicU64,
+    learned_blocks: std::sync::atomic::AtomicU64,
+    latency_buckets: [std::sync::atomic::AtomicU64; 5],
+    latency_sum_ms: std::sync::atomic::AtomicU64,
+    latency_count: std::sync::atomic::AtomicU64,
 }
 
 /// Reference proportions for the score buckets, loaded once from
@@ -103,6 +107,31 @@ impl Metrics {
         self.score_buckets[idx].fetch_add(1, Relaxed);
     }
 
+    pub(crate) fn record_learned(&self, p_hat: f64, band: &str) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let idx = (((p_hat.clamp(0.0, 1.0)) * 5.0).floor() as usize).min(4);
+        self.learned_buckets[idx].fetch_add(1, Relaxed);
+        match band {
+            "review" => self.learned_reviews.fetch_add(1, Relaxed),
+            "block" => self.learned_blocks.fetch_add(1, Relaxed),
+            _ => 0,
+        };
+    }
+
+    pub(crate) fn record_latency_ms(&self, ms: f64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let idx = match ms {
+            x if x < 20.0 => 0,
+            x if x < 50.0 => 1,
+            x if x < 100.0 => 2,
+            x if x < 200.0 => 3,
+            _ => 4,
+        };
+        self.latency_buckets[idx].fetch_add(1, Relaxed);
+        self.latency_sum_ms.fetch_add((ms * 1000.0) as u64, Relaxed);
+        self.latency_count.fetch_add(1, Relaxed);
+    }
+
     fn bucket_proportions(&self) -> Option<[f64; 5]> {
         use std::sync::atomic::Ordering::Relaxed;
         let counts: Vec<u64> = self.score_buckets.iter().map(|b| b.load(Relaxed)).collect();
@@ -144,8 +173,6 @@ impl Metrics {
             load(&self.gateway_executions),
         );
 
-        // Score histogram + drift metric (PSI present only when a reference
-        // distribution is configured via SCORE_REFERENCE_JSON).
         if let Some(props) = self.bucket_proportions() {
             let edges = ["0.2", "0.4", "0.6", "0.8", "1.0"];
             out.push_str(
@@ -161,6 +188,62 @@ impl Metrics {
                      # TYPE risk_governor_score_psi gauge\n",
                 );
                 out.push_str(&format!("risk_governor_score_psi {psi_value:.6}\n"));
+            }
+        }
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            let counts: Vec<u64> = self.learned_buckets.iter().map(|b| b.load(Relaxed)).collect();
+            let total: u64 = counts.iter().sum();
+            if total > 0 {
+                out.push_str(
+                    "# HELP risk_governor_learned_p_hat_bucket Calibrated p_hat histogram.\n\
+                     # TYPE risk_governor_learned_p_hat_bucket counter\n",
+                );
+                let edges = ["0.2", "0.4", "0.6", "0.8", "1.0"];
+                for (edge, c) in edges.iter().zip(counts.iter()) {
+                    out.push_str(&format!(
+                        "risk_governor_learned_p_hat_bucket{{le=\"{edge}\"}} {:.6}\n",
+                        *c as f64 / total as f64
+                    ));
+                }
+                out.push_str(
+                    "# HELP risk_governor_learned_band_total Decisions by learned band.\n\
+                     # TYPE risk_governor_learned_band_total counter\n",
+                );
+                out.push_str(&format!(
+                    "risk_governor_learned_band_total{{band=\"review\"}} {}\n",
+                    self.learned_reviews.load(Relaxed)
+                ));
+                out.push_str(&format!(
+                    "risk_governor_learned_band_total{{band=\"block\"}} {}\n",
+                    self.learned_blocks.load(Relaxed)
+                ));
+            }
+        }
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            let counts: Vec<u64> = self.latency_buckets.iter().map(|b| b.load(Relaxed)).collect();
+            let total: u64 = counts.iter().sum();
+            if total > 0 {
+                let sum_ms = self.latency_sum_ms.load(Relaxed) as f64 / 1000.0;
+                let avg = sum_ms / total as f64;
+                out.push_str(
+                    "# HELP risk_governor_request_duration_ms Request latency (auth window).\n\
+                     # TYPE risk_governor_request_duration_ms histogram\n",
+                );
+                let edges = ["20", "50", "100", "200", "inf"];
+                let mut cum = 0u64;
+                for (edge, c) in edges.iter().zip(counts.iter()) {
+                    cum += c;
+                    out.push_str(&format!(
+                        "risk_governor_request_duration_ms_bucket{{le=\"{edge}\"}} {cum}\n"
+                    ));
+                }
+                out.push_str(&format!("risk_governor_request_duration_ms_sum {sum_ms:.2}\n"));
+                out.push_str(&format!("risk_governor_request_duration_ms_count {total}\n"));
+                out.push_str(&format!(
+                    "# avg {avg:.2}ms p95 <200ms SLO: Thirdwatch <200ms, ADA <30s\n"
+                ));
             }
         }
         out

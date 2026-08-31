@@ -89,6 +89,9 @@ pub struct EvidenceItem {
 #[serde(rename_all = "snake_case")]
 pub enum HypothesisKind {
     CoordinatedReturnAbuse,
+    CardTesting,
+    VelocitySpike,
+    RtoAbuse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,6 +365,18 @@ impl Investigator {
             }
         }
 
+        if member_behaviors
+            .iter()
+            .any(|b| b.distinct_products == 1 && b.account_age_days < 3 && b.order_count >= 3)
+        {
+            supporting.push(EvidenceItem {
+                direction: Direction::Supports,
+                signal: "rto_impulse".into(),
+                description: "single-product, <3d account with ≥3 orders — COD/RTO impulse pattern".into(),
+                weight: 0.2,
+            });
+        }
+
         // --- exposure ---
         let exposure: i64 = cluster
             .members
@@ -376,8 +391,6 @@ impl Investigator {
         }
         confidence += (supporting.len().min(5) as f64) * 0.05;
         confidence += (counter.len().min(3) as f64) * 0.03;
-        // Incompleteness DAMPENS rather than merely fails-to-reward: strong
-        // signals seen through a keyhole are still seen through a keyhole.
         if !observed_all {
             confidence *= 0.75;
         }

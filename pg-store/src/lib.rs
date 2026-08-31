@@ -26,6 +26,9 @@ const SCHEMA: &[&str] = &[
         previous_hash TEXT,
         current_hash  TEXT NOT NULL DEFAULT ''
     )",
+    "DO $$ BEGIN CREATE ROLE app_role; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+    "REVOKE UPDATE, DELETE ON audit_records FROM PUBLIC",
+    "REVOKE UPDATE, DELETE ON audit_records FROM app_role",
     "CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_records(decision_id)",
     "CREATE TABLE IF NOT EXISTS decisions (
         decision_id UUID PRIMARY KEY,
@@ -150,10 +153,12 @@ impl PgStore {
     }
 
     pub async fn all_decisions(&self) -> Result<Vec<Decision>, AuditError> {
-        let rows = sqlx::query_as::<_, (serde_json::Value,)>("SELECT data FROM decisions ORDER BY created_at ASC")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| AuditError::Write(e.to_string()))?;
+        let rows = sqlx::query_as::<_, (serde_json::Value,)>(
+            "SELECT data FROM decisions ORDER BY created_at ASC, decision_id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AuditError::Write(e.to_string()))?;
         rows.into_iter()
             .map(|(v,)| serde_json::from_value(v).map_err(|e| AuditError::Write(e.to_string())))
             .collect()
@@ -186,11 +191,16 @@ impl PgStore {
 impl AuditStore for PgStore {
     async fn append(&self, mut record: AuditRecord) -> Result<(), AuditError> {
         if record.current_hash.is_empty() {
-            // Get last hash from DB
+            let mut tx = self.pool.begin().await.map_err(|e| AuditError::Write(e.to_string()))?;
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(0xA941_i64)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AuditError::Write(e.to_string()))?;
             let last_hash: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
                 "SELECT current_hash FROM audit_records ORDER BY created_at DESC LIMIT 1",
             )
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(|e| AuditError::Write(e.to_string()))?
             .and_then(|(h,)| h);
@@ -204,6 +214,19 @@ impl AuditStore for PgStore {
                 record.created_at,
                 record.previous_hash.as_deref(),
             );
+            sqlx::query("INSERT INTO audit_records (record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+                .bind(record.record_id)
+                .bind(record.decision_id)
+                .bind(event_type_str(record.event_type))
+                .bind(record.payload.clone())
+                .bind(record.created_at)
+                .bind(record.previous_hash.clone())
+                .bind(record.current_hash.clone())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AuditError::Write(e.to_string()))?;
+            tx.commit().await.map_err(|e| AuditError::Write(e.to_string()))?;
+            return Ok(());
         }
 
         sqlx::query("INSERT INTO audit_records (record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash) VALUES ($1, $2, $3, $4, $5, $6, $7)")
@@ -222,7 +245,7 @@ impl AuditStore for PgStore {
 
     async fn by_decision(&self, decision_id: Uuid) -> Result<Vec<AuditRecord>, AuditError> {
         let rows = sqlx::query_as::<_, (Uuid, Option<Uuid>, String, serde_json::Value, chrono::DateTime<chrono::Utc>, Option<String>, String)>(
-            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records WHERE decision_id = $1 ORDER BY created_at ASC",
+            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records WHERE decision_id = $1 ORDER BY created_at ASC, record_id ASC",
         )
         .bind(decision_id)
         .fetch_all(&self.pool)
@@ -244,7 +267,7 @@ impl AuditStore for PgStore {
                 String,
             ),
         >(
-            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records ORDER BY created_at ASC",
+            "SELECT record_id, decision_id, event_type, payload, created_at, previous_hash, current_hash FROM audit_records ORDER BY created_at ASC, record_id ASC",
         )
         .fetch_all(&self.pool)
         .await
@@ -392,6 +415,8 @@ impl EvidenceStore for PgStore {
             volume_last_24h: row.3,
             unique_merchants_24h: 0,
             unique_customers_24h: 0,
+            declines_last_hour: 0,
+            rto_signals_24h: 0,
         })
     }
 }

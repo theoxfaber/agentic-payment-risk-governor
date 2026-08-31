@@ -204,12 +204,44 @@ explicit `SEED_DEMO=true`.
 
 **Fix:** fail-closed: missing `payment_state` → `BLOCK "missing payment_state — refund requires captured"`; missing `captured_paise` → `BLOCK "missing captured_paise — refund requires captured amount"`. `eq_ignore_ascii_case("captured")` replaces manual lowercasing. Helpers and tests updated to include `payment_state: captured, captured_paise: 500000, refunded_paise: 0`; new tests `missing_payment_state_fails_closed` / `missing_captured_paise_fails_closed`; `evaluation-service` and `governor` E2E helpers fixed.
 
+## 16. Audit chain was never verified outside unit tests (dead-code verifier)
+
+**Audit service · caught by:** `grep -r verify_chain -- workspace` — implemented, tested, never called
+
+`AuditService::verify_chain` correctly detects payload tampering and broken `previous_hash` linkage, but no HTTP route, replay engine, or startup check invoked it. A "tamper-evident audit log" that no code path verifies is a claim, not a capability — exactly the class #11/#12 brags about catching.
+
+**Fix:** `risk-governor-replay::ReplayEngine::replay` now verifies the per-decision trail before reconstruction (`ChainTampered` error). `governor-server` exposes `GET /v1/audit/verify` (full-chain verification + record count + head) and `GET /v1/audit/anchor` (head + HMAC), and `GET /v1/decisions/{id}` now returns `audit_verified` + `audit_anchor` (HMAC of trail head when `AUDIT_SIGNING_KEY` is set). Wiring is covered by `replay_returns_decision_with_full_trail` asserting `audit_verified == true`.
+
+## 17. Hash-chaining alone doesn't stop a full-chain rewrite
+
+**Audit service · caught by:** threat-model review ("what stops recompute with process access?")
+
+Hash-chaining detects partial tampering, not a determined rewrite — anyone who can write the DB and recompute every `current_hash` can forge a clean chain.
+
+**Fix:** external anchor. `AUDIT_SIGNING_KEY` (HMAC-SHA256 of chain head, key out-of-process, e.g. KMS/env on a different host) is computed on `GET /v1/audit/verify` and `GET /v1/audit/anchor`. An attacker without the key cannot produce a valid anchor for a rewritten chain; publish the anchor periodically to an external immutable sink (log aggregator, SIEM, or even stdout captured by the orchestrator). Postgres is documented as append-only: `REVOKE UPDATE, DELETE ON audit_records FROM app_role` + `pg_advisory_xact_lock` serializes appends, so a compromised app process still cannot silently mutate history without also compromising the key.
+
+## 18. Single-instance in-memory decision/idempotency state
+
+**Governor server + gateway · caught by:** scaling review
+
+`decisions: RwLock<HashMap>` and `HttpGateway/MockGateway executed: Arc<Mutex<HashMap>>` are single-process. Horizontal scaling would diverge, and a crash mid-approval loses the in-memory idempotency cache.
+
+**Fix (honest mitigation, not hand-wave):** decisions are *already* hydrated from Postgres on boot and `upsert_decision` survives restarts; crash recovery replays the persisted map. Gateway at-most-once does **not** rely solely on the in-memory cache: layer 2 is the deterministic Razorpay idempotency key `rfnd_{payment_id}_{decision_id}` (Razorpay server-side dedup) + the `receipt == decision_id` refund-landed probe on 5xx, both of which survive a process loss. The in-memory cache is now atomic via `_pending` claim-before-network with `pg_advisory_xact_lock`-style busy-wait ( `HttpGateway`/`MockGateway` insert `_pending` under lock before the network call; concurrent duplicate waits or reuses the final result, never double-fires — `duplicate_decision_id_executes_exactly_once` pinned). Horizontal scaling requires replacing the `RwLock` with `SELECT ... FOR UPDATE` on a `decisions` row and moving the gateway cache to Postgres — documented as the next scaling step, not pretended away.
+
+## 19. Learned escalation happened after money had moved (critical ordering)
+
+**Governor server · caught by:** execution-order audit (`routes.rs:78–141` vs `action-service:264–278`)
+
+`submit_action` called `svc.process_action()` first, which executed the Razorpay gateway for every pre-learned `ALLOW`; only afterward did the route compute `p̂`, attach `learned_insight`, and mutate `ALLOW → REVIEW/BLOCK` in the HTTP response. A request could return `decision: "block"` while a gateway call had already fired — the response, metrics, and audit no longer described the action that controlled execution.
+
+**Fix:** promote the learned gate into the pipeline. `action-service::learned::DefaultLearnedScorer` is now injected into `ActionService` (`with_learned_scorer`) and scored *before* `DecisionMade` and before the `ALLOW` branch. The final outcome is computed once, audited once, and only then passed to `RazorpayGateway`. The HTTP layer no longer rewrites decisions post-execution; it only records metrics from `decision.learned_insight`. Wired through `governor-server` production `wire()` and `bootstrap::test_state`; pinned by `learned_escalation_blocks_before_gateway` (high `p̂` + expensive amount → `BLOCK` with zero gateway calls) and `learned_review_escalation_blocks_allow_but_still_no_gateway`.
+
 ---
 
 ## Known limitations (honest list)
 
 | Limitation | Why | Plan |
 |---|---|---|
-| Evidence store is in-memory per-process | Postgres-backed `EvidenceStore` not built yet | Next phase |
-| Workers seeded via JSON file, not DB | Same root cause as above | Replaced by Postgres store |
-| Audit writes still in-process | Fire-and-forget bus pattern deliberately scheduled last | Phase 2 final step |
+| Evidence store is hybrid (PG exists, workers still file-seeded in compose) | Postgres-backed `EvidenceStore` built, JSON seeding retained for demo ergonomics | Seed via DB in prod profile |
+| Single decision-owner process | `RwLock<HashMap>` + advisory lock for audit; gateway dedup has durable layer but not DB-backed | `FOR UPDATE` + Postgres idempotency table for multi-replica |
+| Audit anchor requires external publishing | HMAC computed and exposed; caller must ship `audit_anchor.head_hash + hmac` to immutable sink | Sidecar that POSTs anchor to external log every N records |

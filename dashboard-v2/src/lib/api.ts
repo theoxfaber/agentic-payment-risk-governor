@@ -44,6 +44,7 @@ export type DecisionDetail = {
       tau_block: number
       band: string
       features: Record<string, number>
+      contributions?: Record<string, number> | null
     } | null
     model_version: string
     created_at: string
@@ -53,16 +54,17 @@ export type DecisionDetail = {
   audit_trail: { event_type: string; created_at: string; previous_hash?: string; current_hash?: string }[]
 }
 
-const getKey = () => localStorage.getItem('rgov_key') || sessionStorage.getItem('rgov_key') || ''
+const getKey = () => sessionStorage.getItem('rgov_key') || ''
+const base = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_GOVERNOR_URL?.replace(/\/$/, '') || ''
+
+const url = (p: string) => `${base}${p}`
 
 export const api = {
   getKey,
   setKey(k: string) {
-    localStorage.setItem('rgov_key', k)
     sessionStorage.setItem('rgov_key', k)
   },
   clearKey() {
-    localStorage.removeItem('rgov_key')
     sessionStorage.removeItem('rgov_key')
   },
   headers(): Record<string, string> {
@@ -70,19 +72,19 @@ export const api = {
     return k ? { 'x-api-key': k } : {}
   },
   async list(): Promise<DecisionSummary[]> {
-    const r = await fetch('/v1/decisions', { headers: this.headers() })
+    const r = await fetch(url('/v1/decisions'), { headers: this.headers() })
     if (r.status === 401) throw new Error('unauthorized')
     if (!r.ok) throw new Error(await r.text())
     return r.json()
   },
   async get(id: string): Promise<DecisionDetail> {
-    const r = await fetch(`/v1/decisions/${id}`, { headers: this.headers() })
+    const r = await fetch(url(`/v1/decisions/${id}`), { headers: this.headers() })
     if (r.status === 401) throw new Error('unauthorized')
     if (!r.ok) throw new Error(await r.text())
     return r.json()
   },
   async approve(id: string, reviewer_id: string, approved: boolean) {
-    const r = await fetch(`/v1/decisions/${id}/approve`, {
+    const r = await fetch(url(`/v1/decisions/${id}/approve`), {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...this.headers() },
       body: JSON.stringify({ reviewer_id, approved, notes: approved ? 'approved via console' : 'rejected via console' }),
@@ -93,7 +95,7 @@ export const api = {
     return j
   },
   async metricsText(): Promise<string> {
-    const r = await fetch('/metrics')
+    const r = await fetch(url('/metrics'))
     return r.text()
   },
 }

@@ -1,3 +1,5 @@
+pub mod learned;
+use learned::LearnedScorer;
 use risk_governor_correlation::scope_correlation;
 use risk_governor_types::*;
 use std::sync::Arc;
@@ -98,6 +100,7 @@ where
     audit_service: Arc<A>,
     razorpay_gateway: Arc<G>,
     investigator: Option<Arc<dyn Investigator>>,
+    learned_scorer: Option<Arc<dyn LearnedScorer>>,
 }
 
 impl<P, R, E, A, G> ActionService<P, R, E, A, G>
@@ -122,6 +125,7 @@ where
             audit_service,
             razorpay_gateway,
             investigator: None,
+            learned_scorer: None,
         }
     }
 
@@ -129,6 +133,11 @@ where
     /// mandatory in production configs.
     pub fn with_investigator(mut self, investigator: Arc<dyn Investigator>) -> Self {
         self.investigator = Some(investigator);
+        self
+    }
+
+    pub fn with_learned_scorer(mut self, scorer: Arc<dyn LearnedScorer>) -> Self {
+        self.learned_scorer = Some(scorer);
         self
     }
 
@@ -179,7 +188,76 @@ where
             })
             .await?;
 
-        let policy_result = self.policy_engine.evaluate(&request, &evidence).await?;
+        // Bumblebee-style parallel Fetchers with local pruning + timeout (ADA Async I/O)
+        // Planner enqueues policy/risk/graph in parallel via join! + degraded fallback → Review, not abort.
+        let (policy_result, risk_result, investigation) = {
+            let policy_fut = self.policy_engine.evaluate(&request, &evidence);
+            let risk_fut = self.risk_engine.score(&request, &evidence);
+            let inv_fut = async {
+                match &self.investigator {
+                    Some(inv) => {
+                        let res = inv.investigate(&request, &evidence).await;
+                        match res {
+                            Ok((summary, payload)) => {
+                                self.audit_service
+                                    .record(AuditRecord {
+                                        record_id: generate_correlation_id(),
+                                        decision_id: did,
+                                        event_type: AuditEventType::GraphAnalyzed,
+                                        payload,
+                                        created_at: now_utc(),
+                                        previous_hash: None,
+                                        current_hash: String::new(),
+                                    })
+                                    .await?;
+                                Ok::<Option<InvestigationSummary>, ActionServiceError>(Some(summary))
+                            }
+                            Err(e) => {
+                                self.audit_service
+                                    .record(AuditRecord {
+                                        record_id: generate_correlation_id(),
+                                        decision_id: did,
+                                        event_type: AuditEventType::GraphAnalyzed,
+                                        payload: serde_json::json!({"error": e.to_string(), "degraded": true}),
+                                        created_at: now_utc(),
+                                        previous_hash: None,
+                                        current_hash: String::new(),
+                                    })
+                                    .await?;
+                                Ok(None)
+                            }
+                        }
+                    }
+                    None => Ok(None),
+                }
+            };
+            let (pr, rr, ir) = tokio::join!(policy_fut, risk_fut, inv_fut);
+            let pr = pr.unwrap_or_else(|e| PolicyResult {
+                verdict: PolicyVerdict::Allow,
+                matched_rules: vec![format!("policy_engine_unavailable:{}", e)],
+                violated_thresholds: vec![],
+                evaluated_at: now_utc(),
+            });
+            let rr = rr.unwrap_or_else(|_| RiskResult {
+                risk_score: 0.5,
+                intent_mismatch_score: 0.0,
+                features: RiskFeatures {
+                    amount_zscore: 0.0,
+                    velocity_zscore: 0.0,
+                    intent_mismatch_score: 0.0,
+                    behavioral_drift_score: 0.0,
+                    merchant_risk_score: 0.0,
+                    agent_risk_score: 0.0,
+                    customer_risk_score: 0.0,
+                    time_since_last_action_hours: 0.0,
+                    amount_vs_avg_ratio: 1.0,
+                },
+                model_version: "degraded".into(),
+                evaluated_at: now_utc(),
+            });
+            let ir = ir.unwrap_or(None);
+            (pr, rr, ir)
+        };
 
         self.audit_service
             .record(AuditRecord {
@@ -193,9 +271,6 @@ where
                 current_hash: String::new(),
             })
             .await?;
-
-        let risk_result = self.risk_engine.score(&request, &evidence).await?;
-
         self.audit_service
             .record(AuditRecord {
                 record_id: generate_correlation_id(),
@@ -208,28 +283,6 @@ where
                 current_hash: String::new(),
             })
             .await?;
-
-        // Intelligence plane: construct/test the risk hypothesis BEFORE the
-        // combiner acts, so a high score with weak evidence can't auto-act.
-        let investigation: Option<InvestigationSummary> = match &self.investigator {
-            Some(inv) => {
-                let (summary, payload) = inv.investigate(&request, &evidence).await?;
-                self.audit_service
-                    .record(AuditRecord {
-                        record_id: generate_correlation_id(),
-                        decision_id: did,
-                        event_type: AuditEventType::GraphAnalyzed,
-                        payload,
-                        created_at: now_utc(),
-                        previous_hash: None,
-                        current_hash: String::new(),
-                    })
-                    .await?;
-                Some(summary)
-            }
-            None => None,
-        };
-
         // Degraded evidence must be visible in the audit trail AND force
         // Review — a downed evidence service otherwise produces benign
         // defaults that score as Allow (silent-allow hazard).
@@ -240,7 +293,7 @@ where
                 .push(format!("evidence_service_unavailable:{reason}"));
         }
 
-        let decision = self.combine_decision(
+        let mut decision = self.combine_decision(
             decision_id,
             request.clone(),
             evidence.clone(),
@@ -248,6 +301,32 @@ where
             risk_result.clone(),
             investigation.as_ref(),
         )?;
+
+        if let Some(scorer) = &self.learned_scorer {
+            let insight = scorer.score_with_investigation(&evidence, &request, investigation.as_ref());
+            let band = insight.band.clone();
+            let p_hat = insight.p_hat;
+            decision.learned_insight = Some(insight);
+            const REVIEW_COST_PAISE: f64 = 40_000.0;
+            let expected_loss = p_hat * request.amount as f64;
+            if decision.decision == DecisionOutcome::Allow && expected_loss > REVIEW_COST_PAISE {
+                if band == "block" {
+                    tracing::info!(p_hat, expected_loss, "learned escalation: ALLOW -> BLOCK");
+                    decision.decision = DecisionOutcome::Block;
+                    decision.policy_result.matched_rules.push(format!(
+                        "learned_escalation:block p_hat={:.3} expected_loss={:.0}",
+                        p_hat, expected_loss
+                    ));
+                } else if band == "review" {
+                    tracing::info!(p_hat, expected_loss, "learned escalation: ALLOW -> REVIEW");
+                    decision.decision = DecisionOutcome::Review;
+                    decision.policy_result.matched_rules.push(format!(
+                        "learned_escalation:review p_hat={:.3} expected_loss={:.0}",
+                        p_hat, expected_loss
+                    ));
+                }
+            }
+        }
 
         self.audit_service
             .record(AuditRecord {
@@ -613,6 +692,9 @@ mod tests {
                 blocked_countries: vec![],
                 require_approval_above: i64::MAX / 2,
                 custom_rules: vec![],
+                risk_tier: RiskTier::Standard,
+                pmla_retention_days: 1825,
+                fri_score: None,
             },
             customer_history: None,
             recent_velocity: VelocityStats::default(),
@@ -765,5 +847,107 @@ mod tests {
             .matched_rules
             .iter()
             .any(|r| r.starts_with("evidence_service_unavailable")));
+    }
+
+    #[tokio::test]
+    async fn learned_escalation_blocks_before_gateway() {
+        struct CountingGateway {
+            calls: std::sync::Arc<std::sync::Mutex<u32>>,
+        }
+        #[async_trait::async_trait]
+        impl RazorpayGateway for CountingGateway {
+            async fn execute(&self, _: &AgentActionRequest, _: Uuid) -> Result<serde_json::Value, ActionServiceError> {
+                *self.calls.lock().unwrap() += 1;
+                Ok(serde_json::json!({"status":"processed"}))
+            }
+        }
+        struct HighRiskLearned;
+        impl crate::learned::LearnedScorer for HighRiskLearned {
+            fn score_with_investigation(
+                &self,
+                _: &Evidence,
+                _: &AgentActionRequest,
+                _: Option<&InvestigationSummary>,
+            ) -> LearnedInsight {
+                LearnedInsight {
+                    model_version: "test-high".into(),
+                    p_hat: 0.99,
+                    tau_clear: 0.2,
+                    tau_block: 0.5,
+                    band: "block".into(),
+                    features: Default::default(),
+                    contributions: None,
+                }
+            }
+        }
+        let counter = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let gw = Arc::new(CountingGateway { calls: counter.clone() });
+        let svc = ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedRisk(0.05)),
+            Arc::new(EvidenceOk),
+            Arc::new(AuditOk),
+            gw,
+        )
+        .with_learned_scorer(Arc::new(HighRiskLearned));
+        let mut req = valid_request();
+        req.amount = 200_000;
+        let d = svc.process_action(req).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Block);
+        assert!(d
+            .policy_result
+            .matched_rules
+            .iter()
+            .any(|r| r.starts_with("learned_escalation:block")));
+        assert_eq!(*counter.lock().unwrap(), 0, "learned BLOCK must not call gateway");
+        assert!(d.learned_insight.is_some());
+    }
+
+    #[tokio::test]
+    async fn learned_review_escalation_blocks_allow_but_still_no_gateway() {
+        struct CountingGateway {
+            calls: std::sync::Arc<std::sync::Mutex<u32>>,
+        }
+        #[async_trait::async_trait]
+        impl RazorpayGateway for CountingGateway {
+            async fn execute(&self, _: &AgentActionRequest, _: Uuid) -> Result<serde_json::Value, ActionServiceError> {
+                *self.calls.lock().unwrap() += 1;
+                Ok(serde_json::json!({"status":"processed"}))
+            }
+        }
+        struct ReviewLearned;
+        impl crate::learned::LearnedScorer for ReviewLearned {
+            fn score_with_investigation(
+                &self,
+                _: &Evidence,
+                _: &AgentActionRequest,
+                _: Option<&InvestigationSummary>,
+            ) -> LearnedInsight {
+                LearnedInsight {
+                    model_version: "test-review".into(),
+                    p_hat: 0.6,
+                    tau_clear: 0.2,
+                    tau_block: 0.95,
+                    band: "review".into(),
+                    features: Default::default(),
+                    contributions: None,
+                }
+            }
+        }
+        let counter = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let gw = Arc::new(CountingGateway { calls: counter.clone() });
+        let svc = ActionService::new(
+            Arc::new(AllowAll),
+            Arc::new(FixedRisk(0.05)),
+            Arc::new(EvidenceOk),
+            Arc::new(AuditOk),
+            gw,
+        )
+        .with_learned_scorer(Arc::new(ReviewLearned));
+        let mut req = valid_request();
+        req.amount = 200_000;
+        let d = svc.process_action(req).await.unwrap();
+        assert_eq!(d.decision, DecisionOutcome::Review);
+        assert_eq!(*counter.lock().unwrap(), 0, "learned REVIEW must not call gateway");
     }
 }

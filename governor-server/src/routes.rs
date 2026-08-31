@@ -3,10 +3,13 @@
 
 use crate::state::AppState;
 use action_service::{ActionServiceError, RazorpayGateway as _};
-use axum::extract::{Path, State};
+use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::Json;
 use risk_governor_types::*;
+use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -75,17 +78,14 @@ pub(crate) async fn submit_action(
     // 400, never a 500.
     action_service::validate_request(&request).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    let mut decision = state.svc.process_action(request).await?;
-    {
-        let scorer = crate::learned::LearnedScorer::from_embedded();
-        let insight = scorer.score(&decision.evidence_snapshot, &decision.action);
-        decision.learned_insight = Some(insight);
+    let start = std::time::Instant::now();
+    let decision = state.svc.process_action(request.clone()).await?;
+    state.metrics.record_latency_ms(start.elapsed().as_secs_f64() * 1000.0);
+    if let Some(insight) = &decision.learned_insight {
+        state.metrics.record_learned(insight.p_hat, &insight.band);
     }
     state.metrics.record(decision.decision);
-    // Drift monitoring: every scored action feeds the risk-score histogram
-    // (PSI at /metrics vs SCORE_REFERENCE_JSON when configured).
     state.metrics.record_score(decision.risk_result.risk_score);
-    // Every ALLOW fired one money-movement call inside process_action.
     if decision.decision == DecisionOutcome::Allow {
         state.metrics.count_execution();
     }
@@ -123,7 +123,36 @@ pub(crate) async fn list_decisions(State(state): State<Arc<AppState>>) -> Json<s
         .collect::<Vec<_>>()))
 }
 
+pub(crate) async fn razorpay_webhook(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let secret = state
+        .webhook_secret
+        .as_deref()
+        .ok_or_else(|| ApiError::internal("webhook not configured: set WEBHOOK_SECRET".into()))?;
+    let sig = headers
+        .get("x-razorpay-signature")
+        .or_else(|| headers.get("X-Razorpay-Signature"))
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| ApiError::bad_request("missing X-Razorpay-Signature".into()))?;
+    if !razorpay_gateway::verify_webhook_signature(&body, sig, secret) {
+        return Err(ApiError::bad_request("invalid webhook signature".into()));
+    }
+    let payload: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|e| ApiError::bad_request(format!("invalid json: {e}")))?;
+    state
+        .audit
+        .record(AuditEventType::WebhookReceived, None, payload.clone())
+        .await;
+    Ok(Json(
+        serde_json::json!({"verified": true, "received": payload.get("event")}),
+    ))
+}
+
 /// Replay: what the governor saw, every evaluation it ran, and why it decided.
+/// The per-decision trail is verified with the hash chain; a tampered trail returns 500.
 pub(crate) async fn replay_decision(
     State(state): State<Arc<AppState>>,
     Path(decision_id): Path<Uuid>,
@@ -140,9 +169,136 @@ pub(crate) async fn replay_decision(
         .trail_for(decision_id)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+    let chain_verified = audit_service::AuditService::<crate::backends::AuditBackend>::verify_records(&trail).is_ok();
+    if !chain_verified && !trail.is_empty() {
+        let err = audit_service::AuditService::<crate::backends::AuditBackend>::verify_records(&trail).unwrap_err();
+        return Err(ApiError::internal(format!(
+            "audit chain tampered for {decision_id}: {err}"
+        )));
+    }
+    let anchor = state.anchor_key.as_deref().and_then(|k| {
+        trail.last().map(|h| {
+            serde_json::json!({
+                "head_hash": h.current_hash,
+                "hmac_sha256": audit_service::anchor_signature(&h.current_hash, k),
+                "anchored": true,
+            })
+        })
+    });
     Ok(Json(serde_json::json!({
         "decision": decision,
         "audit_trail": trail,
+        "audit_verified": chain_verified,
+        "audit_anchor": anchor,
+    })))
+}
+
+pub(crate) async fn verify_audit_chain(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let records = state.audit.all_records().await.unwrap_or_default();
+    let verified = audit_service::AuditService::<crate::backends::AuditBackend>::verify_chain(&records);
+    let head = records.last().map(|r| r.current_hash.clone());
+    let anchor = match (&state.anchor_key, &head) {
+        (Some(k), Some(h)) => Some(serde_json::json!({
+            "head_hash": h,
+            "hmac_sha256": audit_service::anchor_signature(h, k),
+            "anchored": true,
+        })),
+        _ => head
+            .as_ref()
+            .map(|h| serde_json::json!({ "head_hash": h, "anchored": false })),
+    };
+    match verified {
+        Ok(()) => Json(serde_json::json!({
+            "verified": true,
+            "records": records.len(),
+            "head": head,
+            "anchor": anchor,
+        })),
+        Err(e) => Json(serde_json::json!({
+            "verified": false,
+            "records": records.len(),
+            "head": head,
+            "anchor": anchor,
+            "error": e,
+        })),
+    }
+}
+
+pub(crate) async fn audit_anchor(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let records = state.audit.all_records().await.unwrap_or_default();
+    let head = records.last().map(|r| r.current_hash.clone());
+    match (&state.anchor_key, head) {
+        (Some(k), Some(h)) => Json(serde_json::json!({
+            "head_hash": h,
+            "hmac_sha256": audit_service::anchor_signature(&h, k),
+            "anchored": true,
+            "records": records.len(),
+            "note": "HMAC-SHA256 of chain head with AUDIT_SIGNING_KEY (out-of-process). Publish this anchor externally; a full-chain rewrite without the key cannot forge it."
+        })),
+        (None, Some(h)) => Json(serde_json::json!({
+            "head_hash": h,
+            "anchored": false,
+            "records": records.len(),
+            "note": "Chain is hash-linked but not HMAC-anchored. Set AUDIT_SIGNING_KEY to enable external anchor; also REVOKE UPDATE/DELETE on audit_records in Postgres for append-only storage."
+        })),
+        (_, None) => Json(serde_json::json!({ "head_hash": null, "anchored": false, "records": 0 })),
+    }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct RealParams {
+    pub count: Option<usize>,
+}
+
+pub(crate) async fn real_analysis(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RealParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let count = params.count.unwrap_or(20).clamp(1, 100);
+    let raw = state
+        .gateway
+        .fetch_real_payments(count)
+        .await
+        .map_err(|e| ApiError::internal(e.to_string()))?;
+    let items = raw.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let total: i64 = items
+        .iter()
+        .filter_map(|p| p.get("amount").and_then(|v| v.as_i64()))
+        .sum();
+    let avg = if items.is_empty() {
+        0
+    } else {
+        total / items.len() as i64
+    };
+    let analysis: Vec<serde_json::Value> = items
+        .iter()
+        .map(|p| {
+            let amt = p.get("amount").and_then(|v| v.as_i64()).unwrap_or(0);
+            let status = p.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let risk = if amt > avg * 3 {
+                "high"
+            } else if amt > avg * 2 {
+                "medium"
+            } else {
+                "low"
+            };
+            serde_json::json!({
+                "id": p.get("id"),
+                "amount_paise": amt,
+                "amount_inr": amt as f64 / 100.0,
+                "status": status,
+                "risk_flag": risk,
+                "raw": p
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "source": "razorpay_test",
+        "count": items.len(),
+        "total_paise": total,
+        "avg_paise": avg,
+        "payments": analysis,
+        "note": "Real Razorpay test-mode data — replaces synthetic dataset-gen for live analysis. Requires RAZORPAY_KEY_ID/SECRET."
     })))
 }
 
@@ -179,8 +335,6 @@ pub(crate) async fn approve_decision(
         map.pop(&decision_id).ok_or(ApiError::not_found(decision_id))?
     };
 
-    // Restore-on-reject helper: the claim must go back or the queue loses it.
-    // The error value is built FIRST — it may read from the claim.
     macro_rules! restore_and {
         ($err:expr) => {{
             let err = $err;

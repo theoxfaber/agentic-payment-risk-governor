@@ -108,7 +108,11 @@ impl HttpGateway {
 
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 if attempt >= 3 {
-                    return Ok((status, resp.json().await.unwrap_or(json!(null))));
+                    let payload = resp
+                        .json()
+                        .await
+                        .map_err(|e| ActionServiceError::RazorpayGateway(format!("body decode: {e}")))?;
+                    return Ok((status, payload));
                 }
                 let delay = retry_after
                     .unwrap_or_else(|| 1 << attempt) // 1s, 2s, 4s
@@ -353,7 +357,7 @@ impl HttpGateway {
 
         let mut attempt = 0u32;
         loop {
-            let resp = self
+            let resp = match self
                 .http
                 .post(&url)
                 .basic_auth(&self.key_id, Some(&self.key_secret))
@@ -362,7 +366,25 @@ impl HttpGateway {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string()))?;
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    if self
+                        .refund_landed(payment_id, request.amount, &receipt)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        tracing::warn!(?decision_id, "refund LANDED despite transport error — dedup");
+                        return Ok(json!({
+                            "status": "processed",
+                            "deduplicated_after_upstream_error": true,
+                            "payment_id": payment_id,
+                            "amount": request.amount,
+                        }));
+                    }
+                    return Err(ActionServiceError::RazorpayGateway(format!("transport error: {e}")));
+                }
+            };
             let status = resp.status();
 
             if status.is_success() {
@@ -459,13 +481,9 @@ impl HttpGateway {
             .get("items")
             .and_then(|i| i.as_array())
             .map(|items| {
-                items.iter().any(|r| {
-                    match r.get("receipt").and_then(|s| s.as_str()) {
-                        // Our receipt → ours, regardless of amount.
-                        Some(rcpt) => rcpt == receipt,
-                        // Legacy refunds carry no receipt: fall back to amount.
-                        None => r.get("amount").and_then(|a| a.as_i64()) == Some(amount_paise),
-                    }
+                items.iter().any(|r| match r.get("receipt").and_then(|s| s.as_str()) {
+                    Some(rcpt) => rcpt == receipt,
+                    None => r.get("amount").and_then(|a| a.as_i64()) == Some(amount_paise),
                 })
             })
             .unwrap_or(false);
@@ -474,9 +492,28 @@ impl HttpGateway {
 }
 
 /// Phase 1 stand-in: records what would have been sent, moves no money.
-#[derive(Default)]
+/// Mirrors HttpGateway idempotency so demo + tests exercise at-most-once without network.
 pub struct MockGateway {
-    pub calls: std::sync::Mutex<Vec<(Uuid, serde_json::Value)>>,
+    pub calls: std::sync::Arc<std::sync::Mutex<Vec<(Uuid, serde_json::Value)>>>,
+    executed: std::sync::Arc<std::sync::Mutex<HashMap<Uuid, serde_json::Value>>>,
+}
+
+impl Default for MockGateway {
+    fn default() -> Self {
+        Self {
+            calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            executed: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl Clone for MockGateway {
+    fn clone(&self) -> Self {
+        Self {
+            calls: self.calls.clone(),
+            executed: self.executed.clone(),
+        }
+    }
 }
 
 #[async_trait]
@@ -486,14 +523,44 @@ impl RazorpayGateway for MockGateway {
         request: &AgentActionRequest,
         decision_id: Uuid,
     ) -> Result<serde_json::Value, ActionServiceError> {
+        let mut waits = 0;
+        loop {
+            {
+                let mut guard = self.executed.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(cached) = guard.get(&decision_id).cloned() {
+                    if cached.get("_pending").and_then(|v| v.as_bool()) == Some(true) {
+                        if waits >= 40 {
+                            return Err(ActionServiceError::RazorpayGateway(
+                                "concurrent mock execution in progress".into(),
+                            ));
+                        }
+                    } else {
+                        return Ok(cached);
+                    }
+                } else {
+                    guard.insert(decision_id, json!({"_pending": true}));
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            waits += 1;
+        }
         let body = json!({
             "mock": true,
             "action_type": request.action_type,
             "amount": request.amount,
             "agent_id": request.agent_id,
         });
-        self.calls.lock().unwrap().push((decision_id, body.clone()));
-        Ok(json!({ "id": format!("rfnd_mock_{decision_id}"), "status": "processed", "mock": true }))
+        {
+            let mut guard = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+            guard.push((decision_id, body.clone()));
+        }
+        let resp = json!({ "id": format!("rfnd_mock_{decision_id}"), "status": "processed", "mock": true });
+        self.executed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(decision_id, resp.clone());
+        Ok(resp)
     }
 }
 
@@ -504,11 +571,12 @@ impl RazorpayGateway for MockGateway {
 /// many leading bytes matched, which is exploitable on a payments webhook.
 /// Case-insensitivity comes free from `hex::decode`.
 pub fn verify_webhook_signature(raw_body: &[u8], signature: &str, webhook_secret: &str) -> bool {
+    if signature.trim().len() < 32 {
+        return false;
+    }
     let mut mac = Hmac::<Sha256>::new_from_slice(webhook_secret.as_bytes()).expect("hmac accepts any key length");
     mac.update(raw_body);
     match hex::decode(signature.trim()) {
-        // verify_slice recomputes the tag and compares in constant time; a
-        // malformed/odd-length hex signature is rejected before comparison.
         Ok(sig_bytes) => mac.verify_slice(&sig_bytes).is_ok(),
         Err(_) => false,
     }

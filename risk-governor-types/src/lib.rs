@@ -121,6 +121,15 @@ pub struct AgentHistory {
     pub anomaly_flags: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskTier {
+    Standard,
+    Medium,
+    High,
+    VeryHigh,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerchantPolicy {
     pub merchant_id: String,
@@ -134,6 +143,19 @@ pub struct MerchantPolicy {
     pub blocked_countries: Vec<String>,
     pub require_approval_above: i64,
     pub custom_rules: Vec<CustomRule>,
+    #[serde(default = "default_risk_tier")]
+    pub risk_tier: RiskTier,
+    #[serde(default = "default_pmla_retention")]
+    pub pmla_retention_days: u32,
+    #[serde(default)]
+    pub fri_score: Option<u8>,
+}
+
+fn default_risk_tier() -> RiskTier {
+    RiskTier::Standard
+}
+fn default_pmla_retention() -> u32 {
+    1825
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +187,10 @@ pub struct VelocityStats {
     pub volume_last_24h: i64,
     pub unique_merchants_24h: u32,
     pub unique_customers_24h: u32,
+    #[serde(default)]
+    pub declines_last_hour: u32,
+    #[serde(default)]
+    pub rto_signals_24h: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +240,8 @@ pub struct LearnedInsight {
     pub tau_block: f64,
     pub band: String,
     pub features: std::collections::HashMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contributions: Option<std::collections::HashMap<String, f64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

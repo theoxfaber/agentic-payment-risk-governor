@@ -1,9 +1,26 @@
 use chrono::Utc;
+use hmac::{Hmac, Mac};
 use risk_governor_types::*;
+use sha2::Sha256;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+pub fn anchor_signature(head_hash: &str, key: &[u8]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac key");
+    mac.update(head_hash.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+pub fn verify_anchor_signature(head_hash: &str, signature: &str, key: &[u8]) -> bool {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac key");
+    mac.update(head_hash.as_bytes());
+    match hex::decode(signature.trim()) {
+        Ok(sig) => mac.verify_slice(&sig).is_ok(),
+        Err(_) => false,
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum AuditError {
@@ -80,9 +97,41 @@ impl<S: AuditStore> AuditService<S> {
         Self { store }
     }
 
+    pub fn redact_payload(v: serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(m) => {
+                let mut out = serde_json::Map::new();
+                for (k, val) in m.into_iter() {
+                    if ["email", "phone", "customer_phone", "customer_email"].contains(&k.as_str()) {
+                        out.insert(k, serde_json::Value::String("***".into()));
+                    } else if k == "payment_id" {
+                        if let Some(s) = val.as_str() {
+                            use sha2::{Digest, Sha256};
+                            let mut h = Sha256::new();
+                            h.update(s.as_bytes());
+                            out.insert(
+                                "payment_id_sha256".into(),
+                                serde_json::Value::String(hex::encode(h.finalize())),
+                            );
+                        }
+                    } else {
+                        out.insert(k.clone(), Self::redact_payload(val));
+                    }
+                }
+                serde_json::Value::Object(out)
+            }
+            serde_json::Value::Array(arr) => {
+                serde_json::Value::Array(arr.into_iter().map(Self::redact_payload).collect())
+            }
+            other => other,
+        }
+    }
+
     /// Fire-and-forget friendly: errors are logged, never propagated to the caller,
     /// so a slow/full audit sink never blocks or fails a decision.
+    /// DPDP Act: PII is redacted before append — raw `payment_id`/`email`/`phone` never hits the chain.
     pub async fn record(&self, event_type: AuditEventType, decision_id: Option<Uuid>, payload: serde_json::Value) {
+        let payload = Self::redact_payload(payload);
         let record_id = generate_correlation_id();
         let created_at = Utc::now();
         let record = AuditRecord {
@@ -107,7 +156,8 @@ impl<S: AuditStore> AuditService<S> {
         self.store.all().await
     }
 
-    /// Verifies the cryptographic tamper-evident integrity of an audit record chain.
+    /// Verifies the cryptographic tamper-evident integrity of a contiguous audit record chain.
+    /// Use for global `all()` ordering — it enforces previous_hash linkage.
     pub fn verify_chain(records: &[AuditRecord]) -> Result<(), String> {
         let mut prev_hash: Option<String> = None;
         for (i, r) in records.iter().enumerate() {
@@ -135,11 +185,52 @@ impl<S: AuditStore> AuditService<S> {
         }
         Ok(())
     }
+
+    /// Verifies record-hash integrity for a filtered trail (e.g. by_decision).
+    /// Checks each record's hash but not cross-record linkage, since the filter
+    /// removes the global predecessor.
+    pub fn verify_records(records: &[AuditRecord]) -> Result<(), String> {
+        for (i, r) in records.iter().enumerate() {
+            let expected = AuditRecord::compute_hash(
+                r.record_id,
+                r.decision_id,
+                r.event_type,
+                &r.payload,
+                r.created_at,
+                r.previous_hash.as_deref(),
+            );
+            if r.current_hash != expected {
+                return Err(format!(
+                    "tamper detected at index {i} (record_id {}): hash mismatch (got {}, expected {})",
+                    r.record_id, r.current_hash, expected
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn chain_head(records: &[AuditRecord]) -> Option<String> {
+        records.last().map(|r| r.current_hash.clone())
+    }
+
+    pub fn anchor_head(head_hash: &str, key: &[u8]) -> String {
+        anchor_signature(head_hash, key)
+    }
+
+    pub fn verify_chain_with_anchor(records: &[AuditRecord], key: &[u8], signature: &str) -> Result<(), String> {
+        Self::verify_chain(records)?;
+        let head = Self::chain_head(records).ok_or_else(|| "empty chain has no head".to_string())?;
+        if !verify_anchor_signature(&head, signature, key) {
+            return Err("anchor signature mismatch — chain was recomputed or key is wrong".into());
+        }
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
 impl<S: AuditStore + 'static> action_service::AuditService for AuditService<S> {
     async fn record(&self, mut record: AuditRecord) -> Result<(), action_service::ActionServiceError> {
+        record.payload = Self::redact_payload(record.payload);
         if record.current_hash.is_empty() {
             record.current_hash = AuditRecord::compute_hash(
                 record.record_id,

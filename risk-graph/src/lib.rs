@@ -343,43 +343,25 @@ impl PropertyGraph {
         let mut cust_resources: HashMap<usize, Vec<EntityId>> = HashMap::new();
         let mut cust_link_kinds: HashMap<usize, std::collections::BTreeSet<RelationKind>> = HashMap::new();
 
-        // For every resource node, join all customers pointing at it.
         for rel in RelationKind::linking_kinds() {
-            for (ri, edge) in self.edges.iter().enumerate() {
+            let mut resource_to_users: HashMap<&EntityId, Vec<usize>> = HashMap::new();
+            for edge in &self.edges {
                 if edge.relation != *rel {
                     continue;
                 }
-                // incoming users of this resource
-                let users: Vec<usize> = self
-                    .in_edges
-                    .get(&edge.to)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|&i| {
-                        let re = &self.edges[i];
-                        if re.relation == *rel {
-                            index.get(&re.from).copied()
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if users.len() < 2 || !users.iter().any(|u| customers[*u].kind == EntityKind::Customer) {
+                if let Some(&u) = index.get(&edge.from) {
+                    resource_to_users.entry(&edge.to).or_default().push(u);
+                }
+            }
+            for (resource_id, users) in resource_to_users {
+                if users.len() < 2 {
                     continue;
                 }
-                // Only cluster CUSTOMER users
-                let cus_users: Vec<usize> = users
-                    .into_iter()
-                    .filter(|u| customers[*u].kind == EntityKind::Customer)
-                    .collect();
-                if cus_users.len() < 2 {
-                    continue;
+                let resource = EntityId(resource_id.0.clone());
+                for &u in &users[1..] {
+                    uf.union(users[0], u);
                 }
-                let resource = EntityId(self.edges[ri].to.0.clone());
-                for &u in &cus_users[1..] {
-                    uf.union(cus_users[0], u);
-                }
-                for &u in &cus_users {
+                for &u in &users {
                     cust_resources.entry(u).or_default().push(resource.clone());
                     cust_link_kinds.entry(u).or_default().insert(*rel);
                 }

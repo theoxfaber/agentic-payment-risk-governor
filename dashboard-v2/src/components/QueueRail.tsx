@@ -64,6 +64,14 @@ export default function QueueRail({ data }: { data: DecisionSummary[] }) {
                   <span className="text-slate-500">{fmtTime(d.created_at)}</span>
                   <span className="text-slate-400">risk {d.risk_score.toFixed(3)}</span>
                 </div>
+                {d.learned_p_hat != null && (
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border ${d.learned_band === 'clear' ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : d.learned_band === 'block' ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' : 'text-amber-400 border-amber-500/30 bg-amber-500/10'}`}>
+                      p̂ {Number(d.learned_p_hat).toFixed(3)} · {String(d.learned_band)}
+                    </span>
+                    <span className="font-mono text-[10px] text-slate-500 truncate">{d.learned_version?.split('-')[0]}</span>
+                  </div>
+                )}
                 <div className="mt-1 font-mono text-[10px] text-slate-600 truncate">{d.decision_id}</div>
               </button>
             ))

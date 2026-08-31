@@ -9,7 +9,7 @@ import AuditRail from './components/AuditRail'
 
 export default function App() {
   const { selectedId, setSelected } = useStore()
-  const { data, error, refetch } = useQuery({ queryKey: ['decisions'], queryFn: () => api.list() })
+  const { data, error, refetch, isLoading } = useQuery({ queryKey: ['decisions'], queryFn: () => api.list() })
 
   useEffect(() => {
     if (error && (error as Error).message === 'unauthorized') {
@@ -25,6 +25,8 @@ export default function App() {
   })
 
   const list = data ?? []
+  const isEmpty = !isLoading && list.length === 0 && !error
+  const base = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_GOVERNOR_URL as string | undefined
 
   return (
     <div className="h-screen flex flex-col">
@@ -47,6 +49,11 @@ export default function App() {
         </span>
       </header>
       <MetricsTicker />
+      {isEmpty && (
+        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-xs text-amber-300 text-center">
+          No decisions yet — this Vercel frontend is static. Start the backend locally <code className="font-mono bg-black/30 px-1 rounded">cargo run -p governor-server</code> then refresh, or set <code className="font-mono bg-black/30 px-1 rounded">VITE_GOVERNOR_URL=https://your-backend.fly.dev</code> in Vercel env and redeploy. {base ? `Current: ${base}` : 'Local: http://127.0.0.1:8080'}
+        </div>
+      )}
       <div className="flex-1 grid grid-cols-[320px_1fr_340px] min-h-0">
         <div className="border-r border-slate-800 bg-slate-950 overflow-hidden">
           <QueueRail data={list} />

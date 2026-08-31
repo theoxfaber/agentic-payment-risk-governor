@@ -78,6 +78,9 @@ pub(crate) async fn seed_demo_entities(store: &EvidenceBackend) -> Result<(), an
                 blocked_countries: vec![],
                 require_approval_above: 100_000,
                 custom_rules: vec![],
+                risk_tier: RiskTier::Standard,
+                pmla_retention_days: 1825,
+                fri_score: None,
             };
             seed.insert(
                 "merchants".into(),
@@ -116,7 +119,7 @@ pub(crate) mod test_support {
         let audit_store = Arc::new(InMemoryAuditStore::new());
         let gateway = Arc::new(Gateway::Mock(Arc::new(MockGateway::default())));
         let (graph, behaviors) = default_graph_and_behaviors();
-        let investigator = GraphInvestigator::new(graph, behaviors, Map::new(), Baseline::default());
+        let investigator = GraphInvestigator::new(graph.clone(), behaviors.clone(), Map::new(), Baseline::default());
         let svc = Arc::new(
             ActionService::new(
                 Arc::new(policy_engine::PolicyEngine::new()),
@@ -125,7 +128,8 @@ pub(crate) mod test_support {
                 Arc::new(AuditService::new(Arc::new(AuditBackend::Mem(audit_store.clone())))),
                 gateway.clone(),
             )
-            .with_investigator(investigator.into_trait()),
+            .with_investigator(investigator.into_trait())
+            .with_learned_scorer(Arc::new(action_service::learned::DefaultLearnedScorer::from_embedded())),
         );
         Arc::new(AppState {
             svc,
@@ -135,6 +139,10 @@ pub(crate) mod test_support {
             metrics: Arc::new(Metrics::default()),
             pg: None,
             api_key: TEST_KEY.into(),
+            anchor_key: None,
+            webhook_secret: None,
+            graph,
+            behaviors,
         })
     }
 
