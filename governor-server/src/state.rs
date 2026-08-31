@@ -4,6 +4,7 @@ use action_service::ActionService;
 use audit_service::AuditService;
 use evidence_service::EvidenceService;
 use risk_governor_types::*;
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
