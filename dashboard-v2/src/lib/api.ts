@@ -44,6 +44,7 @@ export type DecisionDetail = {
       tau_block: number
       band: string
       features: Record<string, number>
+      contributions?: Record<string, number> | null
     } | null
     model_version: string
     created_at: string

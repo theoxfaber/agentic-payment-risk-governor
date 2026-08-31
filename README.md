@@ -8,7 +8,9 @@
     <a href="https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml"><img src="https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <img src="https://img.shields.io/badge/Rust-workspace-dea584?logo=rust" alt="Rust">
     <img src="https://img.shields.io/badge/tests-205%20passing-1a7f37" alt="Tests">
-    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="License"></a><br>
+    <a href="https://agentic-payment-risk-governor.vercel.app"><img src="https://img.shields.io/badge/demo-live%20on%20Vercel-black?logo=vercel" alt="Vercel"></a>
+    <em>Live demo → <a href="https://agentic-payment-risk-governor.vercel.app">agentic-payment-risk-governor.vercel.app</a> (frontend) + local backend `cargo run -p governor-server`</em>
   </p>
 </p>
 
