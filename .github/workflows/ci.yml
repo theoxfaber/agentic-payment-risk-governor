@@ -64,6 +64,6 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: Measure line coverage (fail below threshold)
-        run: cargo llvm-cov --workspace --fail-under-lines 60 --text
+        run: cargo llvm-cov --workspace --fail-under-lines 70 --text
       - name: Generate LCOV report artifact
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info

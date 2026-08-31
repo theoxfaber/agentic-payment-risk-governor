@@ -262,21 +262,38 @@ where
             .await?;
 
         match decision.decision {
-            DecisionOutcome::Allow => {
-                let razorpay_response = self.razorpay_gateway.execute(&request, decision.decision_id).await?;
-
-                self.audit_service
-                    .record(AuditRecord {
-                        record_id: generate_correlation_id(),
-                        decision_id: Some(decision.decision_id),
-                        event_type: AuditEventType::RazorpayCalled,
-                        payload: razorpay_response,
-                        created_at: now_utc(),
-                        previous_hash: None,
-                        current_hash: String::new(),
-                    })
-                    .await?;
-            }
+            DecisionOutcome::Allow => match self.razorpay_gateway.execute(&request, decision.decision_id).await {
+                Ok(razorpay_response) => {
+                    self.audit_service
+                        .record(AuditRecord {
+                            record_id: generate_correlation_id(),
+                            decision_id: Some(decision.decision_id),
+                            event_type: AuditEventType::RazorpayCalled,
+                            payload: razorpay_response,
+                            created_at: now_utc(),
+                            previous_hash: None,
+                            current_hash: String::new(),
+                        })
+                        .await?;
+                }
+                Err(e) => {
+                    self.audit_service
+                        .record(AuditRecord {
+                            record_id: generate_correlation_id(),
+                            decision_id: Some(decision.decision_id),
+                            event_type: AuditEventType::RazorpayCalled,
+                            payload: serde_json::json!({
+                                "status": "execution_failed",
+                                "error": e.to_string(),
+                            }),
+                            created_at: now_utc(),
+                            previous_hash: None,
+                            current_hash: String::new(),
+                        })
+                        .await?;
+                    return Err(e);
+                }
+            },
             DecisionOutcome::Review => {
                 // Human review queue - will be handled by dashboard
             }
@@ -366,6 +383,12 @@ where
         let mut policy_result = policy_result;
         policy_result.matched_rules.append(&mut extra_rules);
 
+        let model_version = if investigation.is_some() {
+            format!("{}-investigated", risk_result.model_version)
+        } else {
+            risk_result.model_version.clone()
+        };
+
         Ok(Decision {
             decision_id,
             action: request,
@@ -373,7 +396,7 @@ where
             risk_result,
             learned_insight: None,
             decision,
-            model_version: "1.1.0-investigated".to_string(),
+            model_version,
             evidence_snapshot: evidence,
             created_at: now_utc(),
             human_review: None,

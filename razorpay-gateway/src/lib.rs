@@ -27,7 +27,7 @@ pub struct HttpGateway {
     base_url: String,
     /// decision_id → response of the ONE money-movement call fired for it.
     /// Arc so that every clone of this gateway shares ONE execution record.
-    executed: std::sync::Arc<std::sync::Mutex<HashMap<Uuid, serde_json::Value>>>,
+    executed: std::sync::Arc<tokio::sync::Mutex<HashMap<Uuid, (serde_json::Value, std::time::Instant)>>>,
 }
 
 impl HttpGateway {
@@ -40,7 +40,7 @@ impl HttpGateway {
             key_id: key_id.into(),
             key_secret: key_secret.into(),
             base_url: RAZORPAY_TEST_BASE.to_string(),
-            executed: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            executed: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -286,18 +286,19 @@ impl RazorpayGateway for HttpGateway {
         // Layer 1: decision-level idempotency. The second execute() for a
         // decision (double-clicked approval, replayed message) must never
         // fire a second money-movement call.
-        if let Some(cached) = self
-            .executed
-            .lock()
-            .expect("gateway idempotency lock")
-            .get(&decision_id)
-        {
-            tracing::warn!(
-                ?decision_id,
-                "duplicate execution attempt — returning cached response, no second gateway call"
-            );
-            return Ok(cached.clone());
+        let mut cache = self.executed.lock().await;
+        if let Some((cached, inserted_at)) = cache.get(&decision_id) {
+            if inserted_at.elapsed() < std::time::Duration::from_secs(3600) {
+                tracing::warn!(
+                    ?decision_id,
+                    "duplicate execution attempt — returning cached response, no second gateway call"
+                );
+                return Ok(cached.clone());
+            }
+            // Expired entry — remove and proceed
+            cache.remove(&decision_id);
         }
+        drop(cache); // Release lock before the actual call
 
         let idempotency_key = Self::deterministic_idempotency_key(request, decision_id);
         tracing::info!(?decision_id, %idempotency_key, action=?request.action_type, "razorpay execution with idempotency key");
@@ -317,10 +318,9 @@ impl RazorpayGateway for HttpGateway {
         };
 
         if let Ok(payload) = &result {
-            self.executed
-                .lock()
-                .expect("gateway idempotency lock")
-                .insert(decision_id, payload.clone());
+            let mut cache = self.executed.lock().await;
+            cache.retain(|_, (_, inserted_at)| inserted_at.elapsed() < std::time::Duration::from_secs(3600));
+            cache.insert(decision_id, (payload.clone(), std::time::Instant::now()));
         }
         result
     }

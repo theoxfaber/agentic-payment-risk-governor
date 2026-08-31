@@ -18,6 +18,18 @@ use risk_governor_types::ActionType;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+#[derive(Debug, thiserror::Error)]
+pub enum IntentError {
+    #[error("LLM request failed: {0}")]
+    LlmRequest(String),
+    #[error("LLM returned status {0}")]
+    LlmStatus(String),
+    #[error("claims decode failed: {0}")]
+    ClaimsDecode(String),
+    #[error("no completion content in response")]
+    NoContent,
+}
+
 // ---------------------------------------------------------------------------
 // Claims model
 // ---------------------------------------------------------------------------
@@ -308,11 +320,11 @@ impl LlmExtractor {
         ))
     }
 
-    fn parse_completion(body: &serde_json::Value) -> Result<IntentClaims, String> {
+    fn parse_completion(body: &serde_json::Value) -> Result<IntentClaims, IntentError> {
         let content = body
             .pointer("/choices/0/message/content")
             .and_then(|c| c.as_str())
-            .ok_or_else(|| "no completion content".to_string())?;
+            .ok_or(IntentError::NoContent)?;
         // Tolerate ```json fences some models emit despite instructions.
         let stripped = content
             .trim()
@@ -320,7 +332,8 @@ impl LlmExtractor {
             .trim_start_matches("```")
             .trim_end_matches("```")
             .trim();
-        let parsed: IntentClaims = serde_json::from_str(stripped).map_err(|e| format!("claims decode: {e}"))?;
+        let parsed: IntentClaims =
+            serde_json::from_str(stripped).map_err(|e| IntentError::ClaimsDecode(e.to_string()))?;
         Ok(parsed)
     }
 
@@ -329,7 +342,7 @@ impl LlmExtractor {
         declared_intent: &str,
         action_type: ActionType,
         amount: i64,
-    ) -> Result<IntentClaims, String> {
+    ) -> Result<IntentClaims, IntentError> {
         // Agent-controlled text is delimited AND sanitized before entering
         // the prompt — see sanitize_intent for the threat model.
         let user_msg = format!(
@@ -350,12 +363,15 @@ impl LlmExtractor {
             }))
             .send()
             .await
-            .map_err(|e| format!("llm request: {e}"))?;
+            .map_err(|e| IntentError::LlmRequest(e.to_string()))?;
 
         if !resp.status().is_success() {
-            return Err(format!("llm status {}", resp.status()));
+            return Err(IntentError::LlmStatus(resp.status().to_string()));
         }
-        let body: serde_json::Value = resp.json().await.map_err(|e| format!("llm decode: {e}"))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| IntentError::LlmRequest(format!("llm decode: {e}")))?;
         Self::parse_completion(&body)
     }
 }

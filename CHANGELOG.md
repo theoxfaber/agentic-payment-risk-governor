@@ -5,6 +5,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — production readiness audit (2026-09-01)
+- **[High]** Bounded decision store: replaced unbounded `HashMap<Uuid, Decision>`
+  with `lru::LruCache` (cap 10,000 entries) — prevents OOM in long-running deployments
+- **[High]** Bounded evidence velocity log: replaced unbounded `Vec` with
+  `VecDeque` (cap 100,000) + 24h auto-prune on `record_action` — O(N) scan bounded
+- **[Medium]** Structured intent engine errors: `Result<IntentClaims, String>` →
+  `Result<IntentClaims, IntentError>` with `LlmRequest`, `LlmStatus`, `ClaimsDecode`,
+  `NoContent` variants via `thiserror`
+- **[Medium]** Length-prefixed input hash: replaced pipe-delimited SHA-256 with
+  4-byte BE length prefix per field — prevents delimiter-collision attacks
+- **[Medium]** Dynamic model version: hardcoded `"1.1.0-investigated"` replaced
+  with `format!("{}-investigated", risk_result.model_version)` for traceability
+- **[Low]** Async-safe gateway cache: `std::sync::Mutex` → `tokio::sync::Mutex`
+  with 1-hour TTL eviction and periodic cleanup in `razorpay-gateway`
+- **[Low]** Gateway failure audit trail: `DecisionOutcome::Allow` now logs
+  `RazorpayCalled` with `status: "execution_failed"` on gateway errors
+- **[Low]** DB sync on approval failure: `pg.upsert_decision` called before
+  restoring to in-memory map, preventing memory/Postgres desync
+- CI coverage threshold bumped from 60% → 70%
+- Live Razorpay smoke test: `auth OK + order_TWXpnNdixB0ksB` (test-mode)
+
 ### Added — learned intelligence layer (docs/AI_DESIGN.md)
 - Pure-Rust logistic regression (`eval-harness::lr`): class-weighted, L2,
   deterministic training on CALIBRATION worlds only; ships as a versioned

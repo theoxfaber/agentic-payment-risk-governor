@@ -80,23 +80,25 @@ pub fn canonical_json_bytes(val: &serde_json::Value) -> Vec<u8> {
 }
 
 impl AgentActionRequest {
-    /// SHA-256 hash of the canonical request input state, establishing a tamper-evident reference.
+    /// SHA-256 hash of the canonical request input state, establishing a
+    /// tamper-evident reference. Fields are length-prefixed to prevent
+    /// delimiter-collision attacks (e.g. agent_id="A|B" vs "A" + merchant="B").
     pub fn input_hash(&self) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(self.agent_id.as_bytes());
-        hasher.update(b"|");
-        hasher.update(self.merchant_id.as_bytes());
-        hasher.update(b"|");
-        hasher.update(format!("{:?}", self.action_type).as_bytes());
-        hasher.update(b"|");
-        hasher.update(self.amount.to_be_bytes()); // fixed big-endian integer format
-        hasher.update(b"|");
-        hasher.update(self.currency.to_uppercase().as_bytes());
-        hasher.update(b"|");
-        hasher.update(self.declared_intent.as_bytes());
-        hasher.update(b"|");
-        hasher.update(canonical_json_bytes(&self.context));
+        // Length-prefix helper: write 4-byte BE length then the bytes.
+        // This makes field boundaries unambiguous regardless of content.
+        let mut lp = |data: &[u8]| {
+            hasher.update((data.len() as u32).to_be_bytes());
+            hasher.update(data);
+        };
+        lp(self.agent_id.as_bytes());
+        lp(self.merchant_id.as_bytes());
+        lp(format!("{:?}", self.action_type).as_bytes());
+        lp(&self.amount.to_be_bytes());
+        lp(self.currency.to_uppercase().as_bytes());
+        lp(self.declared_intent.as_bytes());
+        lp(&canonical_json_bytes(&self.context));
         hex::encode(hasher.finalize())
     }
 }

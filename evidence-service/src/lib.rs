@@ -1,7 +1,7 @@
 use action_service::GatheredEvidence;
 use chrono::{DateTime, Duration, Utc};
 use risk_governor_types::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
@@ -34,9 +34,16 @@ pub struct InMemoryEvidenceStore {
     agents: RwLock<HashMap<String, AgentHistory>>,
     merchants: RwLock<HashMap<String, MerchantPolicy>>,
     customers: RwLock<HashMap<String, CustomerHistory>>,
-    /// (agent_id, timestamp, amount) tuples used to compute velocity windows
-    action_log: RwLock<Vec<(String, DateTime<Utc>, i64)>>,
+    /// (agent_id, timestamp, amount) tuples used to compute velocity windows.
+    /// Bounded to MAX_ACTION_LOG entries; entries older than 24h are pruned on
+    /// each record_action call. Prevents unbounded memory growth.
+    action_log: RwLock<VecDeque<(String, DateTime<Utc>, i64)>>,
 }
+
+/// Maximum number of action log entries kept in memory. Entries beyond this
+/// are evicted FIFO. With 10 actions/sec this covers ~2.7 hours — far beyond
+/// the 24h velocity window's practical needs since old entries are also pruned.
+const MAX_ACTION_LOG: usize = 100_000;
 
 impl InMemoryEvidenceStore {
     pub fn new() -> Self {
@@ -44,7 +51,7 @@ impl InMemoryEvidenceStore {
             agents: RwLock::new(HashMap::new()),
             merchants: RwLock::new(HashMap::new()),
             customers: RwLock::new(HashMap::new()),
-            action_log: RwLock::new(Vec::new()),
+            action_log: RwLock::new(VecDeque::new()),
         }
     }
 
@@ -94,7 +101,12 @@ impl InMemoryEvidenceStore {
         let one_day_ago = now - Duration::hours(24);
 
         let mut stats = VelocityStats::default();
+        // VecDeque is time-ordered: once we see entries within the 24h window
+        // we know all subsequent entries are also within it.
         for (aid, ts, amount) in log.iter() {
+            if *ts < one_day_ago {
+                continue;
+            }
             if aid != agent_id {
                 continue;
             }
@@ -102,10 +114,8 @@ impl InMemoryEvidenceStore {
                 stats.actions_last_hour += 1;
                 stats.volume_last_hour += amount;
             }
-            if *ts >= one_day_ago {
-                stats.actions_last_24h += 1;
-                stats.volume_last_24h += amount;
-            }
+            stats.actions_last_24h += 1;
+            stats.volume_last_24h += amount;
         }
         stats
     }
@@ -132,10 +142,21 @@ impl EvidenceStore for InMemoryEvidenceStore {
     }
 
     async fn record_action(&self, request: &AgentActionRequest) -> Result<(), EvidenceError> {
-        self.action_log
-            .write()
-            .await
-            .push((request.agent_id.clone(), request.timestamp, request.amount));
+        let mut log = self.action_log.write().await;
+        // Prune entries older than 24h (velocity windows don't look further).
+        let cutoff = Utc::now() - Duration::hours(24);
+        while let Some((_, ts, _)) = log.front() {
+            if *ts < cutoff {
+                log.pop_front();
+            } else {
+                break;
+            }
+        }
+        // Hard cap: FIFO eviction if somehow the deque grows beyond the limit.
+        while log.len() >= MAX_ACTION_LOG {
+            log.pop_front();
+        }
+        log.push_back((request.agent_id.clone(), request.timestamp, request.amount));
         Ok(())
     }
 

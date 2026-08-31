@@ -31,6 +31,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 async-trait = { workspace = true }
 subtle = { workspace = true }
+lru = "0.12"
 
 [[bin]]
 name = "governor-server"

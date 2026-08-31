@@ -4,7 +4,6 @@ use action_service::ActionService;
 use audit_service::AuditService;
 use evidence_service::EvidenceService;
 use risk_governor_types::*;
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use uuid::Uuid;
 
@@ -24,7 +23,9 @@ pub(crate) struct AppState {
     pub gateway: Arc<Gateway>,
     /// Every decision served, keyed by decision_id — the review queue reads
     /// from here, replay reads the immutable trail from the audit store.
-    pub decisions: RwLock<HashMap<Uuid, Decision>>,
+    /// Bounded to MAX_CACHED_DECISIONS entries (LRU eviction); old decisions
+    /// survive in Postgres. Prevents unbounded memory growth in production.
+    pub decisions: RwLock<lru::LruCache<Uuid, Decision>>,
     pub metrics: Arc<Metrics>,
     /// Set when DATABASE_URL is configured: decisions are write-through
     /// persisted here and hydrated from it at boot.

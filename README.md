@@ -4,7 +4,7 @@ Defense-only verifier for autonomous refund abuse. Agents never hold the Razorpa
 
 [![CI](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml/badge.svg)](https://github.com/theoxfaber/agentic-payment-risk-governor/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-workspace-dea584?logo=rust)
-![Tests](https://img.shields.io/badge/tests-202%20passing-1a7f37)
+![Tests](https://img.shields.io/badge/tests-202%2B%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
 > **Scope:** `POST /v1/actions → ALLOW / REVIEW / BLOCK → at-most-once Razorpay → audited`. Live is the deterministic verifier + risk features with learned `p̂` + conformal band emitted as observability. Synthetic held-out data proves the machinery — see `docs/AI_DESIGN.md` §5.
@@ -71,8 +71,10 @@ Visual board: [`docs/architecture.excalidraw`](docs/architecture.excalidraw) —
 | Balance — `captured` gate + `captured − refunded` checked, missing fields fail-closed | `policy-engine::evaluate` | `missing_payment_state_fails_closed` |
 | At-most-once — `rfnd_{pay}_{decision}` + per-decision cache + `receipt == decision_id` probe | `HttpGateway::execute` | `razorpay-gateway` |
 | Tamper-evident — sorted canonical JSON → `SHA-256(previous‖record)` + `deny_unknown_fields` | `canonical_json_bytes` | `audit-service` |
+| Length-prefixed input hash — field boundaries unambiguous, no delimiter collision | `input_hash` | `risk-governor-types` |
 | Constant-time auth — `subtle::ct_eq` | `auth::require_api_key` | `governor-server` |
 | One approval wins — 8-way `REVIEW` → 1 execution (claim-under-lock) | `routes::approve_decision` | `concurrent_approvals_execute_exactly_once` |
+| Bounded memory — LRU(10K) decisions, VecDeque(100K) velocity log, TTL(1h) gateway cache | `state.rs`, `evidence-service`, `razorpay-gateway` | unit tests |
 
 ---
 
@@ -100,9 +102,9 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 
 ## Verification
 
-**Live smoke (test-mode, partial):** `auth OK + order_TUyv0Ib1swX7ki` live; `/payments/create/json` is deprecated `404` → refund path covered by `HttpGateway` tests (idempotency, receipt probe). Reproduce: `RAZORPAY_KEY_ID=rzp_test_... cargo run -p razorpay-gateway --bin rzp_smoke`
+**Live smoke (test-mode, partial):** `auth OK + order_TWXpnNdixB0ksB` live; `/payments/create/json` is deprecated `404` → refund path covered by `HttpGateway` tests (idempotency, receipt probe). Reproduce: `RAZORPAY_KEY_ID=rzp_test_... cargo run -p razorpay-gateway --bin rzp_smoke`
 
-**Offline suite:** `cargo test --workspace` (202), `cargo test --test financial_invariants`, `cargo test --test test_adversarial_concurrency` (8-way race → 1). Coverage `cargo llvm-cov --workspace --fail-under-lines 60`.
+**Offline suite:** `cargo test --workspace` (202+), `cargo test --test financial_invariants`, `cargo test --test test_adversarial_concurrency` (8-way race → 1). Coverage `cargo llvm-cov --workspace --fail-under-lines 70`.
 
 **Held-out (synthetic, machinery check):** calibration `2026`, held-out `31415/27182/16180`.
 
@@ -114,6 +116,22 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 | Calibrated LR | 100% | 94% | ₹0 | ₹2,01,600 |
 
 `972` households `0` flagged; degradation `1%→59%` review; `140` random worlds `100%/99.4%`; camouflage 12 runs `z=-1.16/0.95`. Source: `cargo run --release -p eval-harness` → `docs/EVAL_REPORT_2026-08-28.md` + `BENCHMARK.md`.
+
+---
+
+## Production Readiness
+
+| Concern | Before | After |
+|---|---|---|
+| Decision store | Unbounded `HashMap` (OOM risk) | `LruCache` bounded to 10K entries, Postgres for history |
+| Velocity log | Unbounded `Vec` (OOM risk) | `VecDeque` bounded to 100K, 24h auto-prune |
+| Gateway cache | `std::sync::Mutex` (blocks async) | `tokio::sync::Mutex` + 1h TTL eviction |
+| Input hash | Pipe-delimited (collision risk) | Length-prefixed fields |
+| Intent errors | `String` | Structured `IntentError` enum via `thiserror` |
+| Model version | Hardcoded `"1.1.0-investigated"` | Dynamic from risk engine |
+| Gateway failure audit | Missing audit record on failure | `RazorpayCalled` with `execution_failed` logged |
+| Approval failure DB sync | Memory/Postgres desync | `upsert_decision` before restore |
+| CI coverage gate | 60% | 70% |
 
 ---
 

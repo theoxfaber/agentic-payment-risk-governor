@@ -93,7 +93,7 @@ pub(crate) async fn submit_action(
         .decisions
         .write()
         .expect("decisions lock")
-        .insert(decision.decision_id, decision.clone());
+        .put(decision.decision_id, decision.clone());
     if let Some(pg) = &state.pg {
         if let Err(e) = pg.upsert_decision(&decision).await {
             tracing::error!(decision_id = %decision.decision_id, "decision persist failed: {e}");
@@ -103,8 +103,8 @@ pub(crate) async fn submit_action(
 }
 
 pub(crate) async fn list_decisions(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let map = state.decisions.read().expect("decisions lock");
-    let decisions: Vec<&Decision> = map.values().collect();
+    let map = state.decisions.write().expect("decisions lock");
+    let decisions: Vec<&Decision> = map.iter().map(|(_, d)| d).collect();
     Json(serde_json::json!(decisions
         .iter()
         .map(|d| serde_json::json!({
@@ -130,7 +130,7 @@ pub(crate) async fn replay_decision(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let decision = state
         .decisions
-        .read()
+        .write()
         .expect("decisions lock")
         .get(&decision_id)
         .cloned()
@@ -176,7 +176,7 @@ pub(crate) async fn approve_decision(
     // race across the gateway await.
     let mut decision = {
         let mut map = state.decisions.write().expect("decisions lock");
-        map.remove(&decision_id).ok_or(ApiError::not_found(decision_id))?
+        map.pop(&decision_id).ok_or(ApiError::not_found(decision_id))?
     };
 
     // Restore-on-reject helper: the claim must go back or the queue loses it.
@@ -188,7 +188,7 @@ pub(crate) async fn approve_decision(
                 .decisions
                 .write()
                 .expect("decisions lock")
-                .insert(decision_id, decision);
+                .put(decision_id, decision);
             return Err(err);
         }};
     }
@@ -262,6 +262,13 @@ pub(crate) async fn approve_decision(
                         }),
                     )
                     .await;
+                // Sync the unresolved state back to Postgres before restoring
+                // to the in-memory map, preventing memory/DB desync.
+                if let Some(pg) = &state.pg {
+                    if let Err(pe) = pg.upsert_decision(&decision).await {
+                        tracing::error!(decision_id = %decision_id, "failed to persist unresolved decision: {pe}");
+                    }
+                }
                 restore_and!(ApiError::internal(format!("gateway execution failed: {e}")));
             }
         }
@@ -271,7 +278,7 @@ pub(crate) async fn approve_decision(
         .decisions
         .write()
         .expect("decisions lock")
-        .insert(decision_id, decision.clone());
+        .put(decision_id, decision.clone());
     if let Some(pg) = &state.pg {
         if let Err(e) = pg.upsert_decision(&decision).await {
             tracing::error!(decision_id = %decision_id, "reviewed decision persist failed: {e}");
@@ -506,7 +513,7 @@ mod tests {
         // Resolved decision is back in the map with the winner's review.
         let resolved = state
             .decisions
-            .read()
+            .write()
             .expect("decisions lock")
             .get(&decision.decision_id)
             .cloned()

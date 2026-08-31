@@ -37,6 +37,7 @@ use pg_store::PgStore;
 use risk_governor_types::*;
 use state::{AppState, Metrics};
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::{Arc, RwLock};
 
 /// The full router: public routes (dashboard/health/metrics) plus the
@@ -126,15 +127,14 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Hydrate prior decisions so replay/review survive restarts.
-    let decisions: HashMap<uuid::Uuid, Decision> = match &pg {
-        Some(s) => s
-            .all_decisions()
-            .await?
-            .into_iter()
-            .map(|d| (d.decision_id, d))
-            .collect(),
-        None => HashMap::new(),
-    };
+    const MAX_CACHED_DECISIONS: usize = 10_000;
+    let mut decisions: lru::LruCache<uuid::Uuid, Decision> =
+        lru::LruCache::new(NonZeroUsize::new(MAX_CACHED_DECISIONS).unwrap());
+    if let Some(s) = &pg {
+        for d in s.all_decisions().await? {
+            decisions.put(d.decision_id, d);
+        }
+    }
     if !decisions.is_empty() {
         tracing::info!(count = decisions.len(), "hydrated prior decisions from Postgres");
     }
