@@ -293,19 +293,25 @@ pub const CALIBRATION_SEED: u64 = 2026;
 pub const HELDOUT_SEEDS: &[u64] = &[31_415, 27_182, 16_180];
 
 /// The eight world specs for one seed (all kinds).
+/// Scale: 10k background customers per world (80k per seed) — set EVAL_SCALE=small for 300 (CI fast).
 fn world_specs(_kind: dataset_gen::WorldKind, seed: u64) -> Vec<dataset_gen::WorldSpec> {
     use dataset_gen::WorldKind;
+    let bg = if std::env::var("EVAL_SCALE").as_deref() == Ok("small") {
+        300
+    } else {
+        10_000
+    };
     [
-        (WorldKind::Normal, (300, 0, 3)),
-        (WorldKind::Household, (300, 8, 3)),
+        (WorldKind::Normal, (bg, 0, 3)),
+        (WorldKind::Household, (bg, 8, 3)),
         // Coincidental sharing: NAT IPs, popular devices, reused addresses.
         // All legit — measures honest precision under real-world overlap.
-        (WorldKind::CoincidentalSharing, (300, 8, 3)),
-        (WorldKind::ReturnAbuse, (300, 6, 3)),
-        (WorldKind::RefundAbuse, (300, 6, 3)),
-        (WorldKind::DistributedRing, (300, 6, 3)),
-        (WorldKind::MerchantCollusion, (300, 6, 3)),
-        (WorldKind::AdversarialEvasion, (300, 6, 3)),
+        (WorldKind::CoincidentalSharing, (bg, 8, 3)),
+        (WorldKind::ReturnAbuse, (bg, 6, 3)),
+        (WorldKind::RefundAbuse, (bg, 6, 3)),
+        (WorldKind::DistributedRing, (bg, 6, 3)),
+        (WorldKind::MerchantCollusion, (bg, 6, 3)),
+        (WorldKind::AdversarialEvasion, (bg, 6, 3)),
     ]
     .into_iter()
     .map(|(kind, (bg, rings, size))| dataset_gen::WorldSpec {

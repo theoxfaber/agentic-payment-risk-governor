@@ -22,6 +22,7 @@ pg-store = { path = "../pg-store" }
 tower-http = { workspace = true, features = ["trace", "cors", "fs"] }
 axum = { workspace = true }
 tokio = { workspace = true }
+governor = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

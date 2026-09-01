@@ -27,18 +27,24 @@ mod state;
 
 use auth::resolve_api_key;
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, Request, State},
+    middleware::Next,
+    response::IntoResponse,
     routing::{get, post},
     Router,
 };
 use backends::{AuditBackend, EvidenceBackend};
 use bootstrap::{default_graph_and_behaviors, seed_demo_entities};
+use governor::clock::DefaultClock;
+use governor::state::{InMemoryState, NotKeyed};
+use governor::{Quota, RateLimiter};
 use investigation_engine::{Baseline, GraphInvestigator};
 use pg_store::PgStore;
 use risk_governor_types::*;
 use state::{AppState, Metrics};
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
+use std::sync::OnceLock;
 use std::sync::{Arc, RwLock};
 
 /// The full router: public routes (dashboard/health/metrics) plus the
@@ -69,7 +75,21 @@ fn build_router(state: Arc<AppState>) -> Router {
         .nest_service("/assets", assets)
         .merge(protected)
         .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), rate_limit))
         .with_state(state)
+}
+
+async fn rate_limit(State(_state): State<Arc<AppState>>, req: Request, next: Next) -> impl IntoResponse {
+    static LIMITER: OnceLock<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> = OnceLock::new();
+    let limiter = LIMITER.get_or_init(|| RateLimiter::direct(Quota::per_minute(NonZeroU32::new(60).unwrap())));
+    if limiter.check().is_err() {
+        return (
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            axum::Json(serde_json::json!({"error":"rate limited — retry after 1s"})),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 #[tokio::main]

@@ -161,7 +161,7 @@ export default function DetailPanel({ id }: { id: string | null }) {
           </div>
           <div className="rounded bg-slate-950 border border-slate-800 p-2">
             <div className="text-slate-500">velocity last hour</div>
-            <div>{d.evidence_snapshot.recent_velocity.actions_last_hour} actions · ₹{d.evidence_snapshot.recent_velocity.volume_last_hour}</div>
+            <div>{d.evidence_snapshot.recent_velocity.actions_last_hour} actions · ₹{(d.evidence_snapshot.recent_velocity.volume_last_hour / 100).toLocaleString('en-IN')}</div>
           </div>
           <div className="rounded bg-slate-950 border border-slate-800 p-2">
             <div className="text-slate-500">risk model</div>

@@ -2,7 +2,7 @@
 
 > **Source of truth:** `cargo run --release -p eval-harness` (or `EVAL_HELDOUT_SEEDS=...` for externally supplied seeds). Numbers below are generated from `docs/EVAL_REPORT_2026-08-28.md` — do not edit manually. Data is **synthetic** (proves the train → calibrate → guarantee → monitor machinery, not production fraud performance).
 
-**Calibration:** seed `2026` only. **Held-out:** seeds `31415`, `27182`, `16180` (never seen during tuning). Worlds: `normal`, `household`, `coincidental_sharing`, `return_abuse`, `refund_abuse`, `distributed_ring`, `merchant_collusion`, `adversarial_evasion` (300 background customers + 6–8 abuse rings per world).
+**Calibration:** seed `2026` only. **Held-out:** seeds `31415`, `27182`, `16180` (never seen during tuning). Worlds: `normal`, `household`, `coincidental_sharing`, `return_abuse`, `refund_abuse`, `distributed_ring`, `merchant_collusion`, `adversarial_evasion` (300 background for CI, `EVAL_SCALE=large` → 10,000+ customers per world, 80k+ per seed).
 
 ---
 

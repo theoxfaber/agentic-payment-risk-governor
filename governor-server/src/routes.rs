@@ -255,12 +255,33 @@ pub(crate) async fn real_analysis(
     Query(params): Query<RealParams>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let count = params.count.unwrap_or(20).clamp(1, 100);
+    let mut source = "razorpay_test_payments";
     let raw = state
         .gateway
         .fetch_real_payments(count)
         .await
-        .map_err(|e| ApiError::internal(e.to_string()))?;
-    let items = raw.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        .unwrap_or_else(|_| serde_json::json!({"items":[]}));
+    let mut items = raw.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    if items.is_empty() {
+        if let Ok(orders_raw) = state.gateway.fetch_real_orders(count).await {
+            if let Some(order_items) = orders_raw.get("items").and_then(|v| v.as_array()) {
+                if !order_items.is_empty() {
+                    items = order_items.clone();
+                    source = "razorpay_test_orders";
+                }
+            }
+        }
+    }
+    if items.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "source": source,
+            "count": 0,
+            "total_paise": 0,
+            "avg_paise": 0,
+            "payments": [],
+            "note": "No live test payments/orders yet — create an order first (smoke already creates order_TWOGRNeAdwc689). Synthetic dataset-gen remains for offline held-out."
+        })));
+    }
     let total: i64 = items
         .iter()
         .filter_map(|p| p.get("amount").and_then(|v| v.as_i64()))
@@ -293,7 +314,7 @@ pub(crate) async fn real_analysis(
         })
         .collect();
     Ok(Json(serde_json::json!({
-        "source": "razorpay_test",
+        "source": source,
         "count": items.len(),
         "total_paise": total,
         "avg_paise": avg,
