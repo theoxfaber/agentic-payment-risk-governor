@@ -29,7 +29,7 @@ pub(crate) async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResp
 /// Production triage console — Vite + React build from dashboard-v2/dist.
 /// Served as static files; unauthenticated and carries no secret.
 pub(crate) async fn dashboard_page() -> axum::response::Html<String> {
-    const INDEX: &str = include_str!("../../dashboard-v2/dist/index.html");
+    const INDEX: &str = include_str!("../../../dashboard-v2/dist/index.html");
     axum::response::Html(INDEX.to_string())
 }
 

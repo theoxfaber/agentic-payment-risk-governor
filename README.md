@@ -270,15 +270,15 @@ See [`.env.example`](.env.example).
 ### Project Layout
 
 ```
-governor-server/  axum + auth + learned scorer + dashboard
-policy-engine/    caps, balance, velocity, country, RBI RiskTier
-risk-engine/      z-scores, drift, intent mismatch + CEP typologies
-risk-graph/       union-find (device → cluster)
-investigation-engine/  for/against, confidence
-razorpay-gateway/      at-most-once + receipt probe
-eval-harness/          LR + CRC + report
-dashboard-v2/          React 19 + TanStack Query
-governor/              orchestration + e2e tests
+crates/governor-server/  axum + auth + learned scorer + dashboard
+crates/policy-engine/    caps, balance, velocity, country, RBI RiskTier
+crates/risk-engine/      z-scores, drift, intent mismatch + CEP typologies
+crates/risk-graph/       union-find (device → cluster)
+crates/investigation-engine/  for/against, confidence
+crates/razorpay-gateway/      at-most-once + receipt probe
+crates/eval-harness/          LR + CRC + report
+dashboard-v2/                React 19 + TanStack Query
+crates/governor/              orchestration + e2e tests
 ```
 
 Docs: [`DEMO.md`](DEMO.md) · [`docs/AI_DESIGN.md`](docs/AI_DESIGN.md) · [`docs/BUGS.md`](docs/BUGS.md) · [`docs/RBI_RBA.md`](docs/RBI_RBA.md) · [`docs/adasl.yaml`](docs/adasl.yaml) · [`BENCHMARK.md`](BENCHMARK.md)

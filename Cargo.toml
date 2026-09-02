@@ -1,29 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-    "risk-governor-types",
-    "risk-governor-correlation",
-    "risk-graph",
-    "investigation-engine",
-    "dataset-gen",
-    "eval-harness",
-    "action-service",
-    "policy-engine",
-    "risk-engine",
-    "intent-engine",
-    "mcp-server",
-    "evidence-service",
-    "audit-service",
-    "pg-store",
-    "webhook-consumer",
-    "razorpay-gateway",
-    "evaluation-service",
-    "risk-governor-replay",
-    "governor",
-    "governor-server",
-    "infra-probe",
-    "nats-link",
-]
+members = ["crates/*"]
 
 [workspace.dependencies]
 axum = { version = "0.7", features = ["json", "ws"] }
