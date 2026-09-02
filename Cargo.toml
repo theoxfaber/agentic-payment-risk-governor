@@ -23,7 +23,7 @@ futures = "0.3"
 governor = "0.6"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["trace", "cors"] }
-rand = "0.9"
+rand = "0.10"
 rust_decimal = { version = "1.35", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 hmac = "0.12"
