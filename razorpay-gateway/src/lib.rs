@@ -1,4 +1,4 @@
-use action_service::{ActionServiceError, RazorpayGateway};
+use action_service::{ActionServiceError, RazorpayGateway, VerifiedPayment};
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use risk_governor_types::ActionType;
@@ -282,6 +282,50 @@ fn ensure_success(status: reqwest::StatusCode, payload: &serde_json::Value) -> R
 
 #[async_trait]
 impl RazorpayGateway for HttpGateway {
+    async fn verify_payment(&self, payment_id: &str) -> Result<Option<VerifiedPayment>, ActionServiceError> {
+        let url = format!("{}/payments/{}", self.base_url, payment_id);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.key_id, Some(&self.key_secret))
+            .send()
+            .await
+            .map_err(|e| ActionServiceError::RazorpayGateway(format!("payment fetch failed: {e}")))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Err(ActionServiceError::RazorpayGateway(format!(
+                "payment {payment_id} not found (404) — cannot verify captured state"
+            )));
+        }
+        if !status.is_success() {
+            let body: serde_json::Value = resp.json().await.unwrap_or(json!(null));
+            return Err(ActionServiceError::RazorpayGateway(format!(
+                "payment fetch {status}: {body}"
+            )));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ActionServiceError::RazorpayGateway(format!("payment decode: {e}")))?;
+        let st = v.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+        let amt = v
+            .get("amount")
+            .and_then(|x| x.as_i64())
+            .or_else(|| v.get("amount").and_then(|x| x.as_u64()).map(|x| x as i64))
+            .unwrap_or(0);
+        let refunded = v
+            .get("amount_refunded")
+            .and_then(|x| x.as_i64())
+            .or_else(|| v.get("amount_refunded").and_then(|x| x.as_u64()).map(|x| x as i64))
+            .unwrap_or(0);
+        Ok(Some(VerifiedPayment {
+            payment_id: payment_id.to_string(),
+            status: st,
+            amount_paise: amt,
+            refunded_paise: refunded,
+        }))
+    }
+
     async fn execute(
         &self,
         request: &AgentActionRequest,
@@ -518,6 +562,10 @@ impl Clone for MockGateway {
 
 #[async_trait]
 impl RazorpayGateway for MockGateway {
+    async fn verify_payment(&self, _payment_id: &str) -> Result<Option<VerifiedPayment>, ActionServiceError> {
+        Ok(None)
+    }
+
     async fn execute(
         &self,
         request: &AgentActionRequest,

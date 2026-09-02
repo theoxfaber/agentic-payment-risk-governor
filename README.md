@@ -21,7 +21,7 @@ Defense-only verifier for autonomous refund abuse. Agents never hold the Razorpa
 ![Tests](https://img.shields.io/badge/tests-202%2B%20passing-1a7f37)
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)
 
-> **Scope:** `POST /v1/actions → ALLOW / REVIEW / BLOCK → at-most-once Razorpay → audited`. Live is the deterministic verifier + risk features with learned `p̂` + conformal band emitted as observability. Synthetic held-out data proves the machinery — see `docs/AI_DESIGN.md` §5.
+> **Scope:** `POST /v1/actions → ALLOW / REVIEW / BLOCK → at-most-once Razorpay → audited`. Live is the deterministic verifier + risk features with learned `p̂` + conformal band emitted as observability. Synthetic held-out data proves the machinery — see `docs/AI_DESIGN.md` §5. `RAZORPAY_KEY_ID` set → refunds verify payment via `GET /v1/payments/{id}` before any `captured` check; `MockGateway` (no keys) audited as `mock_unverified` for offline demos.
 
 ---
 
@@ -61,7 +61,7 @@ The system checks the payment, scores how unusual it is, finds linked accounts, 
 
 | Plane | Checks | If it fails |
 |---|---|---|
-| Policy | max refund, velocity, country, `captured`, `amount ≤ captured − refunded` | BLOCK |
+| Policy | max refund, velocity, country, **Razorpay-verified** `captured`, `amount ≤ verified captured − verified refunded` | BLOCK |
 | Risk | amount/velocity weirdness, drift, story vs numbers | score 0–1 |
 | Graph | linked by device / address / card | cluster |
 | Investigation | for / against, household defense, confidence | REVIEW |
@@ -74,7 +74,7 @@ Board: [`docs/architecture.excalidraw`](docs/architecture.excalidraw) — patter
 |---|---|---|
 | No key leak | `GOVERNOR_API_KEY` only on server, dashboard via `sessionStorage` | `governor-server` |
 | Paise-safe | `i64` paise, no floats | `policy-engine` |
-| Balance safe | `captured` gate + `captured − refunded`, missing → BLOCK | `missing_payment_state_fails_closed` |
+| Balance safe | **Razorpay-verified** `captured` gate + `captured − refunded` via `GET /v1/payments/{id}` before policy (claimed context overwritten, mismatch audited; missing/not-captured/unverifiable → BLOCK) | `missing_payment_state_fails_closed` + live `verify_payment` |
 | At-most-once | `rfnd_{pay}_{decision}` + pending claim + receipt check | `razorpay-gateway` |
 | Tamper-evident | sorted JSON → `SHA-256` chain | `audit-service` |
 | One approval wins | `REVIEW` removed under lock before gateway | `concurrent_approvals_execute_exactly_once` |
@@ -165,7 +165,7 @@ Agent (no keys) -- HTTP + X-API-Key --> Governor Server (Rust) -- HTTPS + rzp_te
 
 | Plane | Checks | On failure |
 |---|---|---|
-| Policy | `max_refund`, velocity, country, `payment_state == captured`, `amount ≤ captured − refunded` (checked) | `BLOCK` (missing `payment_state`/`captured` also `BLOCK`) |
+| Policy | `max_refund`, velocity, country, **Razorpay-verified** `payment_state == captured`, `amount ≤ verified captured − verified refunded` (claimed overwritten, mismatch audited; missing/not-captured/unverifiable also `BLOCK`) | `BLOCK` |
 | Risk | z-scores, drift (PSI), `intent_mismatch` | score `0–1` |
 | Graph | union-find on device / address / instrument | cluster |
 | Investigation | for / against, confidence | `REVIEW` on conflict or thin evidence |

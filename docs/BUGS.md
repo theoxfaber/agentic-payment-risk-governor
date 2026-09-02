@@ -236,9 +236,20 @@ Hash-chaining detects partial tampering, not a determined rewrite — anyone who
 
 **Fix:** promote the learned gate into the pipeline. `action-service::learned::DefaultLearnedScorer` is now injected into `ActionService` (`with_learned_scorer`) and scored *before* `DecisionMade` and before the `ALLOW` branch. The final outcome is computed once, audited once, and only then passed to `RazorpayGateway`. The HTTP layer no longer rewrites decisions post-execution; it only records metrics from `decision.learned_insight`. Wired through `governor-server` production `wire()` and `bootstrap::test_state`; pinned by `learned_escalation_blocks_before_gateway` (high `p̂` + expensive amount → `BLOCK` with zero gateway calls) and `learned_review_escalation_blocks_allow_but_still_no_gateway`.
 
+## 20. Refund balance check trusted the agent's claimed payment state (no Razorpay lookup)
+
+**Policy + gateway · caught by:** external pre-demo audit — `policy-engine::evaluate` read `captured_paise / refunded_paise / payment_state` only from `request.context` (agent-supplied JSON). `BUGS #15` made missing fields fail-closed, but *present and false* fields sailed through. No code path called `GET /v1/payments/{id}`. An agent could POST `{"payment_id":"pay_real","payment_state":"captured","captured_paise":99999999}` for any `payment_id` and pass the README's "Balance bound" invariant. Real money was still capped because Razorpay would reject the over-refund as a side effect — but the governor itself wasn't the enforcer it claimed to be, violating the pitch "valid credentials don't mean a valid action."
+
+**Fix:** `RazorpayGateway::verify_payment(payment_id) -> Option<VerifiedPayment>` — `HttpGateway` now `GET /v1/payments/{id}` (BasicAuth, same creds as refunds) *before* policy evaluation. Verified `status / amount / amount_refunded` overwrites the claimed context so `policy-engine` evaluates against ground truth, and the original claimed vs verified values plus a `mismatch` flag are appended to the audit trail (`payment_verified: true`). `MockGateway` returns `None` → audit marks `mode: mock_unverified` and trusts claimed context for offline demos. If Razorpay returns non-`captured`, 404, or any fetch error, `ActionService` injects a `violated_thresholds: "payment verification failed — refusing to trust claimed captured state: ..."` and forces `PolicyVerdict::Block` fail-closed *before* the combiner. The verified available balance `amount - amount_refunded` is re-checked regardless of what policy saw. Judge answer: "What stops the agent from lying?" → "We fetch the payment live; here's the audit record showing claimed vs Razorpay."
+
 ---
 
 ## Known limitations (honest list)
+
+| Limitation | Why | Plan |
+|---|---|---|
+| Synthetic eval is honestly synthetic | Held-out numbers are machinery checks; not production fraud rates | Labels from `dataset-gen` by construction — discounted accordingly in README scope line |
+| Verified payment requires live keys | `MockGateway` (no `RAZORPAY_KEY_ID`) cannot verify — offline/CI trusts claimed context, audited as `mock_unverified` | Set `RAZORPAY_KEY_ID/SECRET` for live demo; verification is enforced whenever the gateway is live |
 
 | Limitation | Why | Plan |
 |---|---|---|

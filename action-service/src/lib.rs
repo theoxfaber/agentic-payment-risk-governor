@@ -66,6 +66,14 @@ pub trait AuditService: Send + Sync {
     async fn record(&self, record: AuditRecord) -> Result<(), ActionServiceError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedPayment {
+    pub payment_id: String,
+    pub status: String,
+    pub amount_paise: i64,
+    pub refunded_paise: i64,
+}
+
 #[async_trait::async_trait]
 pub trait RazorpayGateway: Send + Sync {
     async fn execute(
@@ -73,6 +81,10 @@ pub trait RazorpayGateway: Send + Sync {
         request: &AgentActionRequest,
         decision_id: Uuid,
     ) -> Result<serde_json::Value, ActionServiceError>;
+    async fn verify_payment(&self, payment_id: &str) -> Result<Option<VerifiedPayment>, ActionServiceError> {
+        let _ = payment_id;
+        Ok(None)
+    }
 }
 
 /// Intelligence plane boundary. Returns the combiner-facing summary plus a
@@ -152,30 +164,18 @@ where
         scope_correlation(cid, self.process_inner(request)).await
     }
 
-    async fn process_inner(&self, request: AgentActionRequest) -> Result<Decision, ActionServiceError> {
-        // Validate BEFORE anything else — every entry path (HTTP, NATS
-        // workers, demos, tests) gets the same business-field guarantees:
-        // positive amount, non-empty identity/intent. Skipping this let a
-        // negative amount flow through the whole pipeline.
+    async fn process_inner(&self, mut request: AgentActionRequest) -> Result<Decision, ActionServiceError> {
         validate_request(&request)?;
-
-        // The decision ID exists from the moment the request arrives — every
-        // audit record for this action (including pre-decision evaluations)
-        // carries it, so replay reconstructs the FULL trail.
         let decision_id = generate_correlation_id();
         let did = Some(decision_id);
-
         let gathered = self.evidence_service.gather(&request).await?;
         let evidence = gathered.evidence;
-        // Feedback loop: every processed request updates velocity/history.
         self.evidence_service.record_action(&request).await?;
-
         let mut req_payload =
             serde_json::to_value(&request).map_err(|e| ActionServiceError::Validation(e.to_string()))?;
         if let Some(obj) = req_payload.as_object_mut() {
             obj.insert("input_hash".into(), serde_json::Value::String(request.input_hash()));
         }
-
         self.audit_service
             .record(AuditRecord {
                 record_id: generate_correlation_id(),
@@ -187,6 +187,112 @@ where
                 current_hash: String::new(),
             })
             .await?;
+        let mut payment_verify_error: Option<String> = None;
+        let mut payment_verified: Option<VerifiedPayment> = None;
+        if request.action_type == ActionType::Refund {
+            if let Some(pid) = request
+                .context
+                .get("payment_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            {
+                let claimed_state = request.context.get("payment_state").cloned();
+                let claimed_captured = request
+                    .context
+                    .get("captured_paise")
+                    .cloned()
+                    .or_else(|| request.context.get("captured_amount").cloned());
+                let claimed_refunded = request.context.get("refunded_paise").cloned();
+                match self.razorpay_gateway.verify_payment(&pid).await {
+                    Ok(Some(vp)) => {
+                        let mismatch_state = claimed_state
+                            .as_ref()
+                            .and_then(|v| v.as_str())
+                            .map(|s| !s.eq_ignore_ascii_case(&vp.status))
+                            .unwrap_or(true);
+                        let mismatch_captured = claimed_captured
+                            .as_ref()
+                            .and_then(|v| v.as_i64())
+                            .map(|c| c != vp.amount_paise)
+                            .unwrap_or(claimed_captured.is_some());
+                        let mismatch_refunded = claimed_refunded
+                            .as_ref()
+                            .and_then(|v| v.as_i64())
+                            .map(|r| r != vp.refunded_paise)
+                            .unwrap_or(false);
+                        self.audit_service
+                            .record(AuditRecord {
+                                record_id: generate_correlation_id(),
+                                decision_id: did,
+                                event_type: AuditEventType::PolicyEvaluated,
+                                payload: serde_json::json!({
+                                    "payment_verified": true,
+                                    "payment_id": vp.payment_id,
+                                    "verified_status": vp.status,
+                                    "verified_captured_paise": vp.amount_paise,
+                                    "verified_refunded_paise": vp.refunded_paise,
+                                    "claimed_state": claimed_state,
+                                    "claimed_captured": claimed_captured,
+                                    "claimed_refunded": claimed_refunded,
+                                    "mismatch": mismatch_state || mismatch_captured || mismatch_refunded,
+                                }),
+                                created_at: now_utc(),
+                                previous_hash: None,
+                                current_hash: String::new(),
+                            })
+                            .await?;
+                        if let Some(obj) = request.context.as_object_mut() {
+                            obj.insert("payment_state".to_string(), serde_json::json!(vp.status.clone()));
+                            obj.insert("captured_paise".to_string(), serde_json::json!(vp.amount_paise));
+                            obj.insert("refunded_paise".to_string(), serde_json::json!(vp.refunded_paise));
+                            obj.insert("_verified".to_string(), serde_json::json!(true));
+                        }
+                        if mismatch_state || mismatch_captured {
+                            tracing::warn!(payment_id=%pid, claimed=?claimed_state, verified=%vp.status, "payment state mismatch — agent lied about payment");
+                        }
+                        payment_verified = Some(vp);
+                    }
+                    Ok(None) => {
+                        self.audit_service
+                            .record(AuditRecord {
+                                record_id: generate_correlation_id(),
+                                decision_id: did,
+                                event_type: AuditEventType::PolicyEvaluated,
+                                payload: serde_json::json!({
+                                    "payment_verified": false,
+                                    "mode": "mock_unverified",
+                                    "note": "MockGateway — no live Razorpay lookup (RAZORPAY_KEY_ID not set). Trusting claimed context for demo; live mode verifies via GET /v1/payments/{id}",
+                                    "payment_id": pid,
+                                }),
+                                created_at: now_utc(),
+                                previous_hash: None,
+                                current_hash: String::new(),
+                            })
+                            .await?;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        payment_verify_error = Some(msg.clone());
+                        self.audit_service
+                            .record(AuditRecord {
+                                record_id: generate_correlation_id(),
+                                decision_id: did,
+                                event_type: AuditEventType::PolicyEvaluated,
+                                payload: serde_json::json!({
+                                    "payment_verified": false,
+                                    "error": msg,
+                                    "payment_id": pid,
+                                }),
+                                created_at: now_utc(),
+                                previous_hash: None,
+                                current_hash: String::new(),
+                            })
+                            .await?;
+                    }
+                }
+            }
+        }
 
         // Bumblebee-style parallel Fetchers with local pruning + timeout (ADA Async I/O)
         // Planner enqueues policy/risk/graph in parallel via join! + degraded fallback → Review, not abort.
@@ -283,14 +389,42 @@ where
                 current_hash: String::new(),
             })
             .await?;
-        // Degraded evidence must be visible in the audit trail AND force
-        // Review — a downed evidence service otherwise produces benign
-        // defaults that score as Allow (silent-allow hazard).
         let mut policy_result = policy_result;
         if let Some(reason) = &gathered.degraded_reason {
             policy_result
                 .matched_rules
                 .push(format!("evidence_service_unavailable:{reason}"));
+        }
+        if let Some(err) = payment_verify_error {
+            policy_result.violated_thresholds.push(format!(
+                "payment verification failed — refusing to trust claimed captured state: {err}"
+            ));
+            policy_result.verdict = PolicyVerdict::Block;
+        } else if let Some(vp) = &payment_verified {
+            if !vp.status.eq_ignore_ascii_case("captured") {
+                if !policy_result
+                    .violated_thresholds
+                    .iter()
+                    .any(|t| t.contains("not captured"))
+                {
+                    policy_result.violated_thresholds.push(format!(
+                        "verified payment status '{}' is not captured — refund requires captured (Razorpay verified)",
+                        vp.status
+                    ));
+                }
+                policy_result.verdict = PolicyVerdict::Block;
+            }
+            let available = vp.amount_paise.saturating_sub(vp.refunded_paise);
+            if request.amount > available {
+                let msg = format!(
+                    "verified refund amount {} exceeds available balance {} (verified captured {} - verified refunded {})",
+                    request.amount, available, vp.amount_paise, vp.refunded_paise
+                );
+                if !policy_result.violated_thresholds.iter().any(|t| t.contains("exceeds available balance")) {
+                    policy_result.violated_thresholds.push(msg);
+                }
+                policy_result.verdict = PolicyVerdict::Block;
+            }
         }
 
         let mut decision = self.combine_decision(
