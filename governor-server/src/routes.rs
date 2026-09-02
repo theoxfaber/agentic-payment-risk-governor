@@ -55,11 +55,9 @@ pub(crate) async fn submit_action(
     if !context.is_object() {
         context = serde_json::json!({});
     }
-    // The intelligence plane keys off context.customer_id. A missing ID gets a
-    // synthetic one: it shares nothing in the graph → no ring hypothesis → no
-    // added friction. Never fail a request just because investigation can't run.
+    // Synthetic customer_id per-request UUID to avoid spurious clustering (cust_{agent_id} would link all requests from same agent via device).
     if context.get("customer_id").is_none() {
-        context["customer_id"] = serde_json::Value::String(format!("cust_{}", body.agent_id));
+        context["customer_id"] = serde_json::Value::String(format!("cust_{}", Uuid::new_v4()));
     }
 
     let request = AgentActionRequest {
@@ -103,7 +101,7 @@ pub(crate) async fn submit_action(
 }
 
 pub(crate) async fn list_decisions(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let map = state.decisions.write().expect("decisions lock");
+    let map = state.decisions.read().expect("decisions lock");
     let decisions: Vec<&Decision> = map.iter().map(|(_, d)| d).collect();
     Json(serde_json::json!(decisions
         .iter()

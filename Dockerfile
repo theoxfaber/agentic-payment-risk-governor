@@ -21,4 +21,5 @@ COPY --from=build /app/target/release/evidence-worker /usr/local/bin/
 COPY --from=build /app/target/release/governor-server /usr/local/bin/
 COPY --from=build /app/dashboard-v2/dist /app/dashboard-v2/dist
 COPY --from=build /app/seeds /seeds
+EXPOSE 8080
 CMD ["policy-engine-worker"]

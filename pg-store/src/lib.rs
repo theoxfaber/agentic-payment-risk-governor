@@ -29,6 +29,8 @@ const SCHEMA: &[&str] = &[
     "DO $$ BEGIN CREATE ROLE app_role; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
     "REVOKE UPDATE, DELETE ON audit_records FROM PUBLIC",
     "REVOKE UPDATE, DELETE ON audit_records FROM app_role",
+    "GRANT SELECT, INSERT ON audit_records TO app_role",
+    "GRANT SELECT, INSERT, UPDATE ON decisions TO app_role",
     "CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_records(decision_id)",
     "CREATE TABLE IF NOT EXISTS decisions (
         decision_id UUID PRIMARY KEY,

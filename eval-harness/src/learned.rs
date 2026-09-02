@@ -29,10 +29,10 @@ pub const FEATURE_NAMES: &[&str] = &[
     "return_refund_rate",         // max(returns, refunds) / orders
     "log_account_age_days",       // log1p(age)/10 — new accounts are the classic abuse signature
     "distinct_merchants_norm",    // /12 — ring members concentrate on few merchants
-    "distinct_products_norm",     // /30
-    "dispute_ratio",              // disputes / orders
-    "sync_share_72h",             // share of purchase→return gaps under 72h (synchronized returns)
-    "cluster_size_norm",          // size of the resource-sharing cluster (/8)
+    "unique_customers_norm", // /30 — was distinct_products_norm, actually unique_customers_24h in serving (honest rename)
+    "dispute_ratio",         // disputes / orders
+    "sync_share_72h",        // share of purchase→return gaps under 72h (synchronized returns)
+    "cluster_size_norm",     // size of the resource-sharing cluster (/8)
     "cluster_pooled_return_rate", // pooled rate across the cluster — the graph's entire value
 ];
 

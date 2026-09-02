@@ -74,7 +74,7 @@ impl DefaultLearnedScorer {
         } else {
             (vel.unique_merchants_24h as f64 / 12.0).clamp(0.0, 1.0)
         };
-        let distinct_products_norm = if vel.unique_customers_24h == 0 && vel.actions_last_24h == 0 {
+        let unique_customers_norm = if vel.unique_customers_24h == 0 && vel.actions_last_24h == 0 {
             0.54
         } else {
             (vel.unique_customers_24h as f64 / 30.0).clamp(0.0, 1.0)
@@ -103,7 +103,7 @@ impl DefaultLearnedScorer {
             return_refund_rate,
             log_account_age_days,
             distinct_merchants_norm,
-            distinct_products_norm,
+            unique_customers_norm,
             dispute_ratio,
             sync_share_72h,
             cluster_size_norm,

@@ -36,7 +36,6 @@ use axum::{
 use backends::{AuditBackend, EvidenceBackend};
 use bootstrap::{default_graph_and_behaviors, seed_demo_entities};
 use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use investigation_engine::{Baseline, GraphInvestigator};
 use pg_store::PgStore;
@@ -80,12 +79,22 @@ fn build_router(state: Arc<AppState>) -> Router {
 }
 
 async fn rate_limit(State(_state): State<Arc<AppState>>, req: Request, next: Next) -> impl IntoResponse {
-    static LIMITER: OnceLock<RateLimiter<NotKeyed, InMemoryState, DefaultClock>> = OnceLock::new();
-    let limiter = LIMITER.get_or_init(|| RateLimiter::direct(Quota::per_minute(NonZeroU32::new(60).unwrap())));
-    if limiter.check().is_err() {
+    use governor::state::keyed::DashMapStateStore;
+    static LIMITER: OnceLock<RateLimiter<String, DashMapStateStore<String>, DefaultClock>> = OnceLock::new();
+    let limiter = LIMITER.get_or_init(|| {
+        RateLimiter::keyed(Quota::per_second(NonZeroU32::new(10).unwrap()).allow_burst(NonZeroU32::new(20).unwrap()))
+    });
+    let key = req
+        .headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| req.headers().get("authorization").and_then(|v| v.to_str().ok()))
+        .unwrap_or("anon")
+        .to_string();
+    if limiter.check_key(&key).is_err() {
         return (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
-            axum::Json(serde_json::json!({"error":"rate limited — retry after 1s"})),
+            axum::Json(serde_json::json!({"error":"rate limited — per-key 10/s, burst 20"})),
         )
             .into_response();
     }

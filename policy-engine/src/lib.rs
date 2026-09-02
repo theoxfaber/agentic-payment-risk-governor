@@ -185,7 +185,11 @@ impl PolicyEngine {
     }
 
     fn parse_paise(s: &str) -> Option<i64> {
-        let cleaned: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
+        let t = s.trim();
+        if t.contains('.') {
+            return None;
+        }
+        let cleaned: String = t.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
         if cleaned.is_empty() || cleaned == "-" {
             return None;
         }

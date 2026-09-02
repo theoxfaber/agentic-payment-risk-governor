@@ -4,7 +4,6 @@ use risk_governor_types::*;
 use sha2::Sha256;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub fn anchor_signature(head_hash: &str, key: &[u8]) -> String {
@@ -44,8 +43,7 @@ pub trait AuditStore: Send + Sync {
 
 #[derive(Default)]
 pub struct InMemoryAuditStore {
-    records: RwLock<Vec<AuditRecord>>,
-    last_hash: RwLock<Option<String>>,
+    state: tokio::sync::Mutex<(Vec<AuditRecord>, Option<String>)>,
 }
 
 impl InMemoryAuditStore {
@@ -57,7 +55,8 @@ impl InMemoryAuditStore {
 #[async_trait::async_trait]
 impl AuditStore for InMemoryAuditStore {
     async fn append(&self, mut record: AuditRecord) -> Result<(), AuditError> {
-        let mut last = self.last_hash.write().await;
+        let mut guard = self.state.lock().await;
+        let last = &mut guard.1;
         if record.current_hash.is_empty() {
             record.previous_hash = last.clone();
             record.current_hash = AuditRecord::compute_hash(
@@ -70,13 +69,14 @@ impl AuditStore for InMemoryAuditStore {
             );
         }
         *last = Some(record.current_hash.clone());
-        self.records.write().await.push(record);
+        guard.0.push(record);
         Ok(())
     }
 
     async fn by_decision(&self, decision_id: Uuid) -> Result<Vec<AuditRecord>, AuditError> {
-        let records = self.records.read().await;
-        Ok(records
+        let guard = self.state.lock().await;
+        Ok(guard
+            .0
             .iter()
             .filter(|r| r.decision_id == Some(decision_id))
             .cloned()
@@ -84,7 +84,7 @@ impl AuditStore for InMemoryAuditStore {
     }
 
     async fn all(&self) -> Result<Vec<AuditRecord>, AuditError> {
-        Ok(self.records.read().await.clone())
+        Ok(self.state.lock().await.0.clone())
     }
 }
 
