@@ -293,13 +293,13 @@ pub const CALIBRATION_SEED: u64 = 2026;
 pub const HELDOUT_SEEDS: &[u64] = &[31_415, 27_182, 16_180];
 
 /// The eight world specs for one seed (all kinds).
-/// Scale: 10k background customers per world (80k per seed) — set EVAL_SCALE=small for 300 (CI fast).
+/// Scale: 300 background for CI fast; EVAL_SCALE=large → 10k per world (80k/seed) for the 10k+ demo.
 fn world_specs(_kind: dataset_gen::WorldKind, seed: u64) -> Vec<dataset_gen::WorldSpec> {
     use dataset_gen::WorldKind;
-    let bg = if std::env::var("EVAL_SCALE").as_deref() == Ok("small") {
-        300
-    } else {
+    let bg = if std::env::var("EVAL_SCALE").as_deref() == Ok("large") {
         10_000
+    } else {
+        300
     };
     [
         (WorldKind::Normal, (bg, 0, 3)),
