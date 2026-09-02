@@ -345,6 +345,9 @@ pub(crate) async fn approve_decision(
     if body.reviewer_id.trim().is_empty() {
         return Err(ApiError::bad_request("reviewer_id is required".into()));
     }
+    if body.reviewer_id.len() > 128 {
+        return Err(ApiError::bad_request("reviewer_id too long (max 128)".into()));
+    }
 
     // Atomic claim: remove under the write lock. A concurrent approver now
     // sees None (404) instead of a stale unreviewed copy — no check-then-act

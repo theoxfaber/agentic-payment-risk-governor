@@ -142,7 +142,7 @@ impl PgStore {
     pub async fn upsert_decision(&self, d: &Decision) -> Result<(), AuditError> {
         sqlx::query(
             "INSERT INTO decisions (decision_id, outcome, data, created_at) VALUES ($1, $2, $3, $4)
-             ON CONFLICT (decision_id) DO UPDATE SET outcome = EXCLUDED.outcome, data = EXCLUDED.data",
+             ON CONFLICT (decision_id) DO UPDATE SET outcome = EXCLUDED.outcome, data = EXCLUDED.data WHERE decisions.data->'human_review' IS NULL",
         )
         .bind(d.decision_id)
         .bind(serde_json::to_string(&d.decision).map_err(|e| AuditError::Write(e.to_string()))?)

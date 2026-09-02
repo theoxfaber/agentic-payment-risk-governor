@@ -241,7 +241,7 @@ pub struct LearnedInsight {
     pub band: String,
     pub features: std::collections::HashMap<String, f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contributions: Option<std::collections::HashMap<String, f64>>,
+    pub contributions: Option<std::collections::BTreeMap<String, f64>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

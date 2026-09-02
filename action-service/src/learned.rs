@@ -1,5 +1,5 @@
 use risk_governor_types::{AgentActionRequest, Evidence, InvestigationSummary, LearnedInsight};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 const ARTIFACT: &str = include_str!("../../eval-harness/artifacts/lr_model.json");
 
@@ -145,7 +145,7 @@ impl LearnedScorer for DefaultLearnedScorer {
             })
             .collect();
         contrib_vec.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap_or(std::cmp::Ordering::Equal));
-        let contrib: HashMap<String, f64> = contrib_vec.into_iter().collect();
+        let contrib: BTreeMap<String, f64> = contrib_vec.into_iter().collect();
         LearnedInsight {
             model_version: self.model.version.clone(),
             p_hat,
