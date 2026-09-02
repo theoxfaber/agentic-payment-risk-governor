@@ -307,7 +307,11 @@ impl RazorpayGateway for HttpGateway {
             .json()
             .await
             .map_err(|e| ActionServiceError::RazorpayGateway(format!("payment decode: {e}")))?;
-        let st = v.get("status").and_then(|s| s.as_str()).unwrap_or("unknown").to_string();
+        let st = v
+            .get("status")
+            .and_then(|s| s.as_str())
+            .unwrap_or("unknown")
+            .to_string();
         let amt = v
             .get("amount")
             .and_then(|x| x.as_i64())

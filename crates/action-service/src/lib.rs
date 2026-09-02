@@ -420,7 +420,11 @@ where
                     "verified refund amount {} exceeds available balance {} (verified captured {} - verified refunded {})",
                     request.amount, available, vp.amount_paise, vp.refunded_paise
                 );
-                if !policy_result.violated_thresholds.iter().any(|t| t.contains("exceeds available balance")) {
+                if !policy_result
+                    .violated_thresholds
+                    .iter()
+                    .any(|t| t.contains("exceeds available balance"))
+                {
                     policy_result.violated_thresholds.push(msg);
                 }
                 policy_result.verdict = PolicyVerdict::Block;
