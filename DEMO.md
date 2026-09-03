@@ -82,4 +82,4 @@ Live replay now emits `learned_insight: {model_version: lr-1.0.0-calib-0.1.0, p_
 
 - `401 missing or invalid API key` → set `GOVERNOR_API_KEY` env or use `demo123` as above.
 - `cargo test` fails with `database` → you ran `--ignored` without `docker compose up -d` — plain `cargo test --workspace` needs no infra.
-- Dashboard asks for key repeatedly → browser stored wrong key: DevTools → `localStorage.setItem('rgov_key','demo123'); location.reload()`.
+- Dashboard asks for key repeatedly → browser stored wrong key: DevTools → `sessionStorage.setItem('rgov_key','demo123'); location.reload()`.

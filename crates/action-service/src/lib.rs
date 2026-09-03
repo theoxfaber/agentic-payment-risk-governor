@@ -85,6 +85,9 @@ pub trait RazorpayGateway: Send + Sync {
         let _ = payment_id;
         Ok(None)
     }
+    async fn fetch_payment(&self, _payment_id: &str) -> Result<Option<PaymentSnapshot>, ActionServiceError> {
+        Ok(None)
+    }
 }
 
 /// Intelligence plane boundary. Returns the combiner-facing summary plus a
@@ -169,7 +172,15 @@ where
         let decision_id = generate_correlation_id();
         let did = Some(decision_id);
         let gathered = self.evidence_service.gather(&request).await?;
-        let evidence = gathered.evidence;
+        let mut evidence = gathered.evidence;
+        if request.action_type == ActionType::Refund {
+            if let Some(pid) = request.context.get("payment_id").and_then(|v| v.as_str()) {
+                if let Ok(Some(snap)) = self.razorpay_gateway.fetch_payment(pid).await {
+                    evidence.payment_snapshot = Some(snap);
+                }
+            }
+        }
+        // Feedback loop: every processed request updates velocity/history.
         self.evidence_service.record_action(&request).await?;
         let mut req_payload =
             serde_json::to_value(&request).map_err(|e| ActionServiceError::Validation(e.to_string()))?;
@@ -576,6 +587,7 @@ where
             r == "requires_approval_above_threshold"
                 || r.starts_with("policy_engine_unavailable")
                 || r.starts_with("evidence_service_unavailable")
+                || r == "unverified_payment_snapshot"
         });
 
         let high_risk = risk_result.risk_score >= 0.8;
@@ -802,6 +814,12 @@ mod tests {
     struct EvidenceOk;
 
     fn benign_evidence(req: &AgentActionRequest) -> Evidence {
+        let pid = req
+            .context
+            .get("payment_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pay_test_123")
+            .to_string();
         Evidence {
             agent_history: AgentHistory {
                 agent_id: req.agent_id.clone(),
@@ -836,6 +854,15 @@ mod tests {
             },
             customer_history: None,
             recent_velocity: VelocityStats::default(),
+            payment_snapshot: Some(PaymentSnapshot {
+                payment_id: pid,
+                status: "captured".into(),
+                amount: 500000,
+                captured: true,
+                captured_amount: Some(500000),
+                refunded_amount: Some(0),
+                fetched_at: now_utc(),
+            }),
             fetched_at: now_utc(),
         }
     }

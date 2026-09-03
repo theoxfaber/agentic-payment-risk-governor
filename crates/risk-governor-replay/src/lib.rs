@@ -9,7 +9,7 @@ pub enum ReplayError {
     #[error("decision not found in audit log: {0}")]
     DecisionNotFound(Uuid),
     #[error("incomplete audit trail for decision {0}: missing {1}")]
-    IncompleteTrail(Uuid, &'static str),
+    IncompleteTrail(Uuid, String),
     #[error("audit chain tamper detected for decision {0}: {1}")]
     ChainTampered(Uuid, String),
 }
@@ -31,7 +31,7 @@ impl<S: AuditStore + 'static> ReplayEngine<S> {
             .audit
             .trail_for(decision_id)
             .await
-            .map_err(|_| ReplayError::IncompleteTrail(decision_id, "unreachable audit store"))?;
+            .map_err(|_| ReplayError::IncompleteTrail(decision_id, "unreachable audit store".to_string()))?;
         if !trail.is_empty() {
             AuditService::<S>::verify_records(&trail).map_err(|e| ReplayError::ChainTampered(decision_id, e))?;
         }
@@ -42,7 +42,7 @@ impl<S: AuditStore + 'static> ReplayEngine<S> {
             .ok_or(ReplayError::DecisionNotFound(decision_id))?;
 
         let decision: Decision = serde_json::from_value(decision_record.payload.clone())
-            .map_err(|_| ReplayError::IncompleteTrail(decision_id, "corrupt decision payload"))?;
+            .map_err(|e| ReplayError::IncompleteTrail(decision_id, format!("corrupt decision payload: {e}")))?;
 
         let policy_version = trail
             .iter()
@@ -149,6 +149,7 @@ mod tests {
                 },
                 customer_history: None,
                 recent_velocity: VelocityStats::default(),
+                payment_snapshot: None,
                 fetched_at: now_utc(),
             },
             created_at: now_utc(),

@@ -22,6 +22,18 @@ pub(crate) fn resolve_api_key() -> String {
     key
 }
 
+/// Separate approval key. When set, money-releasing approvals require it and
+/// the submit key cannot self-approve its own REVIEWs.
+pub(crate) fn resolve_review_key() -> Option<String> {
+    let v = std::env::var("GOVERNOR_REVIEW_KEY")
+        .ok()
+        .filter(|k| !k.trim().is_empty());
+    if v.is_none() {
+        tracing::warn!("GOVERNOR_REVIEW_KEY not set — approvals accept GOVERNOR_API_KEY (single-key mode). Set GOVERNOR_REVIEW_KEY in production so agents cannot self-approve");
+    }
+    v
+}
+
 /// Pure decision logic — testable without touching process-global env state
 /// (env mutation is unsound under Rust's multithreaded test runners).
 fn api_key_from(env_value: Option<String>) -> String {
@@ -44,8 +56,21 @@ fn authorized(headers: &axum::http::HeaderMap, expected: &str) -> bool {
         .and_then(|v| v.to_str().ok())
         .and_then(|h| h.strip_prefix("Bearer "));
     match from_api_key.or(from_bearer) {
-        Some(provided) => constant_time_eq(provided.as_bytes(), expected.as_bytes()),
+        Some(provided) => constant_time_eq(provided.trim().as_bytes(), expected.as_bytes()),
         None => false,
+    }
+}
+
+/// Approve path needs the review key when one is configured; everything else
+/// accepts either key (review key is a superset for operability).
+fn authorized_for(path: &str, headers: &axum::http::HeaderMap, api_key: &str, review_key: &Option<String>) -> bool {
+    let Some(rk) = review_key.as_deref() else {
+        return authorized(headers, api_key);
+    };
+    if path.contains("/approve") {
+        authorized(headers, rk)
+    } else {
+        authorized(headers, api_key) || authorized(headers, rk)
     }
 }
 
@@ -54,12 +79,16 @@ pub(crate) async fn require_api_key(
     req: Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    if !authorized(req.headers(), &state.api_key) {
+    if !authorized_for(req.uri().path(), req.headers(), &state.api_key, &state.review_key) {
+        let approve_only = state.review_key.is_some() && req.uri().path().contains("/approve");
+        let msg = if approve_only {
+            "missing or invalid REVIEW key — approvals require GOVERNOR_REVIEW_KEY"
+        } else {
+            "missing or invalid API key — send X-API-Key (or Authorization: Bearer)"
+        };
         return (
             axum::http::StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({
-                "error": "missing or invalid API key — send X-API-Key (or Authorization: Bearer)"
-            })),
+            Json(serde_json::json!({ "error": msg })),
         )
             .into_response();
     }

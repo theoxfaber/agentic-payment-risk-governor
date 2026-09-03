@@ -28,6 +28,10 @@ pub struct HttpGateway {
     /// decision_id → response of the ONE money-movement call fired for it.
     /// Arc so that every clone of this gateway shares ONE execution record.
     executed: std::sync::Arc<tokio::sync::Mutex<HashMap<Uuid, (serde_json::Value, std::time::Instant)>>>,
+    /// decision_ids with an in-flight gateway call. Closes the check-then-act
+    /// race: two concurrent execute() with the same decision_id must not both
+    /// POST. Second caller waits for the first and reuses its cached result.
+    pending: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<Uuid>>>,
 }
 
 impl HttpGateway {
@@ -41,6 +45,7 @@ impl HttpGateway {
             key_secret: key_secret.into(),
             base_url: RAZORPAY_TEST_BASE.to_string(),
             executed: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            pending: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new())),
         }
     }
 
@@ -51,9 +56,9 @@ impl HttpGateway {
 
     /// Deterministic idempotency key: `rfnd_{payment_id}_{decision_id}` for refunds,
     /// `pout_{merchant}_{decision_id}` for payouts, generic fallback for others.
-    /// Razorpay server-side dedup guarantees identical keys never double-charge
-    /// even across retries; decision_id makes the key stable for this decision
-    /// but unique across decisions. Logged in audit trail for replay.
+    /// Sent as best-effort `Idempotency-Key` headers; refund safety comes from
+    /// the decision-level cache + pending claim + receipt probe, not from
+    /// server-side header dedup (which Razorpay does not document).
     pub fn deterministic_idempotency_key(request: &AgentActionRequest, decision_id: Uuid) -> String {
         let ctx_payment = request
             .context
@@ -133,6 +138,8 @@ impl HttpGateway {
     }
 
     /// GET with basic auth — used by the live smoke test.
+    /// Fail-closed on non-2xx: callers must be able to distinguish "no data"
+    /// from "keys revoked / payment missing".
     pub async fn get_json(&self, path: &str) -> Result<serde_json::Value, ActionServiceError> {
         let url = format!("{}{}", self.base_url, path);
         let resp = self
@@ -142,6 +149,14 @@ impl HttpGateway {
             .send()
             .await
             .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string()))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body.chars().take(300).collect();
+            return Err(ActionServiceError::RazorpayGateway(format!(
+                "GET {path} failed {status}: {snippet}"
+            )));
+        }
         resp.json()
             .await
             .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string()))
@@ -330,34 +345,52 @@ impl RazorpayGateway for HttpGateway {
         }))
     }
 
+    async fn fetch_payment(
+        &self,
+        payment_id: &str,
+    ) -> Result<Option<risk_governor_types::PaymentSnapshot>, ActionServiceError> {
+        self.fetch_payment_inner(payment_id).await
+    }
     async fn execute(
         &self,
         request: &AgentActionRequest,
         decision_id: Uuid,
     ) -> Result<serde_json::Value, ActionServiceError> {
         // Layer 1: decision-level idempotency. The second execute() for a
-        // decision (double-clicked approval, replayed message) must never
-        // fire a second money-movement call.
-        let mut cache = self.executed.lock().await;
-        if let Some((cached, inserted_at)) = cache.get(&decision_id) {
-            if inserted_at.elapsed() < std::time::Duration::from_secs(3600) {
-                tracing::warn!(
-                    ?decision_id,
-                    "duplicate execution attempt — returning cached response, no second gateway call"
-                );
-                return Ok(cached.clone());
+        // decision (double-clicked approval, replayed request) must never
+        // fire a second money-movement call. A pending set closes the
+        // concurrent check-then-act race: the loser waits for the winner.
+        loop {
+            {
+                let mut cache = self.executed.lock().await;
+                if let Some((cached, inserted_at)) = cache.get(&decision_id) {
+                    if inserted_at.elapsed() < std::time::Duration::from_secs(3600) {
+                        tracing::warn!(
+                            ?decision_id,
+                            "duplicate execution attempt — returning cached response, no second gateway call"
+                        );
+                        return Ok(cached.clone());
+                    }
+                    // Expired entry — remove and proceed
+                    cache.remove(&decision_id);
+                }
+                let mut pending = self.pending.lock().await;
+                if !pending.contains(&decision_id) {
+                    pending.insert(decision_id);
+                    break;
+                }
             }
-            // Expired entry — remove and proceed
-            cache.remove(&decision_id);
+            // Another task is executing this decision — wait briefly then
+            // re-check the cache instead of firing a second POST.
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        drop(cache); // Release lock before the actual call
 
         let idempotency_key = Self::deterministic_idempotency_key(request, decision_id);
         tracing::info!(?decision_id, %idempotency_key, action=?request.action_type, "razorpay execution with idempotency key");
 
         let result = match request.action_type {
             ActionType::Refund => self.execute_refund(request, decision_id).await,
-            _ => {
+            ActionType::Payout | ActionType::PaymentLink => {
                 let (url, body) = self.endpoint_for(request);
                 self.post_with_retry_idempotent(&url, &body, Some(&idempotency_key))
                     .await
@@ -367,6 +400,11 @@ impl RazorpayGateway for HttpGateway {
                         Ok(payload)
                     })
             }
+            // No live Razorpay endpoint is wired for these — fail closed rather
+            // than POSTing to a guessed /payments route.
+            ActionType::Transfer | ActionType::Capture | ActionType::Void => Err(ActionServiceError::RazorpayGateway(
+                "unsupported action_type for live execution".into(),
+            )),
         };
 
         if let Ok(payload) = &result {
@@ -374,6 +412,8 @@ impl RazorpayGateway for HttpGateway {
             cache.retain(|_, (_, inserted_at)| inserted_at.elapsed() < std::time::Duration::from_secs(3600));
             cache.insert(decision_id, (payload.clone(), std::time::Instant::now()));
         }
+        // Always release the pending claim so waiters stop spinning.
+        self.pending.lock().await.remove(&decision_id);
         result
     }
 }
@@ -492,17 +532,64 @@ impl HttpGateway {
         }
     }
 
+    pub async fn fetch_payment_inner(
+        &self,
+        payment_id: &str,
+    ) -> Result<Option<risk_governor_types::PaymentSnapshot>, ActionServiceError> {
+        let url = format!("{}/payments/{}", self.base_url, payment_id);
+        let resp = self
+            .http
+            .get(&url)
+            .basic_auth(&self.key_id, Some(&self.key_secret))
+            .send()
+            .await
+            .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string()))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(ActionServiceError::RazorpayGateway(format!(
+                "payment fetch failed {}",
+                resp.status()
+            )));
+        }
+        let v: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ActionServiceError::RazorpayGateway(e.to_string()))?;
+        let status = v
+            .get("status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let amount = v.get("amount").and_then(|x| x.as_i64()).unwrap_or(0);
+        let captured = v
+            .get("captured")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(status == "captured");
+        Ok(Some(risk_governor_types::PaymentSnapshot {
+            payment_id: payment_id.to_string(),
+            status: status.clone(),
+            amount,
+            captured,
+            captured_amount: v.get("amount").and_then(|x| x.as_i64()),
+            refunded_amount: v.get("amount_refunded").and_then(|x| x.as_i64()),
+            fetched_at: risk_governor_types::now_utc(),
+        }))
+    }
+
     /// True when OUR refund already exists on the payment — i.e. an earlier
     /// attempt processed despite the error response we received. Matching is
-    /// by the `receipt` we stamp with the decision_id; amount is only a
-    /// fallback for legacy refunds created without a receipt, so an unrelated
-    /// same-amount refund can never false-positive the dedup. If state itself
+    /// by the `receipt` we stamp with the decision_id ONLY. A refund without a
+    /// receipt can belong to another flow, so it must never dedup as ours
+    /// (fail-closed: resend is retried, double-spend is avoided by the
+    /// decision-level cache + pending claim). If state itself
     /// is unverifiable (the probe GET fails), this returns Err: refusing to
     /// resend costs a retry; a double refund costs real money.
     async fn refund_landed(
         &self,
         payment_id: &str,
-        amount_paise: i64,
+        _amount_paise: i64,
         receipt: &str,
     ) -> Result<bool, ActionServiceError> {
         let url = format!("{}/payments/{}/refunds?count=100", self.base_url, payment_id);
@@ -531,7 +618,8 @@ impl HttpGateway {
             .map(|items| {
                 items.iter().any(|r| match r.get("receipt").and_then(|s| s.as_str()) {
                     Some(rcpt) => rcpt == receipt,
-                    None => r.get("amount").and_then(|a| a.as_i64()) == Some(amount_paise),
+                    // No receipt: cannot prove it is ours — never dedup.
+                    None => false,
                 })
             })
             .unwrap_or(false);
@@ -570,6 +658,23 @@ impl RazorpayGateway for MockGateway {
         Ok(None)
     }
 
+    /// Mock verified snapshot: mirrors what a live GET /payments/{id} would
+    /// return for a captured test payment, so offline tests/demos exercise
+    /// the verified-snapshot path instead of the unverified fallback.
+    async fn fetch_payment(
+        &self,
+        payment_id: &str,
+    ) -> Result<Option<risk_governor_types::PaymentSnapshot>, ActionServiceError> {
+        Ok(Some(risk_governor_types::PaymentSnapshot {
+            payment_id: payment_id.to_string(),
+            status: "captured".into(),
+            amount: 500_000,
+            captured: true,
+            captured_amount: Some(500_000),
+            refunded_amount: Some(0),
+            fetched_at: risk_governor_types::now_utc(),
+        }))
+    }
     async fn execute(
         &self,
         request: &AgentActionRequest,
@@ -623,7 +728,9 @@ impl RazorpayGateway for MockGateway {
 /// many leading bytes matched, which is exploitable on a payments webhook.
 /// Case-insensitivity comes free from `hex::decode`.
 pub fn verify_webhook_signature(raw_body: &[u8], signature: &str, webhook_secret: &str) -> bool {
-    if signature.trim().len() < 32 {
+    // HMAC-SHA256 is 32 bytes = 64 hex chars. Require the full length so a
+    // truncated forgery never reaches the constant-time compare.
+    if signature.trim().len() != 64 {
         return false;
     }
     let mut mac = Hmac::<Sha256>::new_from_slice(webhook_secret.as_bytes()).expect("hmac accepts any key length");

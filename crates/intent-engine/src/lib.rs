@@ -126,7 +126,14 @@ impl HeuristicExtractor {
             }
             if let Some(v) = parse_number(bare) {
                 let unit_is_paise = tokens.get(i + 1).map(|n| *n == "paise").unwrap_or(false);
-                claims.amount_paise = Some(if unit_is_paise { v } else { v * 100 });
+                // checked: ₹9e16 * 100 overflows i64 — saturate instead of
+                // wrapping (release) / panicking (debug).
+                let paise = if unit_is_paise {
+                    v
+                } else {
+                    v.checked_mul(100).unwrap_or(i64::MAX)
+                };
+                claims.amount_paise = Some(paise);
                 break;
             }
         }
@@ -142,19 +149,26 @@ impl HeuristicExtractor {
             }
         }
 
-        // Action type hint.
+        // Action type hint — word-boundary so "void" doesn't fire on "avoid";
+        // payment-link accepts -, _, space, or joined forms.
+        let has_payment_link = lowered.contains("payment_link")
+            || lowered.contains("payment-link")
+            || lowered.contains("paymentlink")
+            || (lowered.contains("payment") && lowered.contains("link"));
         for (word, kind) in [
             ("refund", "refund"),
             ("payout", "payout"),
-            ("payment link", "payment_link"),
             ("transfer", "transfer"),
             ("capture", "capture"),
             ("void", "void"),
         ] {
-            if lowered.contains(word) {
+            if contains_word(&lowered, word) {
                 claims.action_type_hint = Some(kind.to_string());
                 break;
             }
+        }
+        if claims.action_type_hint.is_none() && has_payment_link {
+            claims.action_type_hint = Some("payment_link".to_string());
         }
 
         const NEGATION_WORDS: &[&str] = &["not", "don't", "dont", "no", "never", "without", "avoid", "non"];
@@ -178,12 +192,16 @@ impl HeuristicExtractor {
         if claims.amount_paise.is_none() {
             if lowered.contains("thousand") {
                 if let Some(num) = extract_number_before_word(&lowered, "thousand") {
-                    claims.amount_paise = Some(num * 1_000 * 100);
+                    if let Some(paise) = num.checked_mul(1_000).and_then(|v| v.checked_mul(100)) {
+                        claims.amount_paise = Some(paise);
+                    }
                 }
             } else if lowered.contains("lakh") || lowered.contains("lac") {
                 let kw = if lowered.contains("lakh") { "lakh" } else { "lac" };
                 if let Some(num) = extract_number_before_word(&lowered, kw) {
-                    claims.amount_paise = Some(num * 100_000 * 100);
+                    if let Some(paise) = num.checked_mul(100_000).and_then(|v| v.checked_mul(100)) {
+                        claims.amount_paise = Some(paise);
+                    }
                 }
             }
         }
@@ -211,7 +229,23 @@ fn extract_number_before_word(text: &str, target_word: &str) -> Option<i64> {
                 "eight" => Some(8),
                 "nine" => Some(9),
                 "ten" => Some(10),
+                "eleven" => Some(11),
+                "twelve" => Some(12),
+                "thirteen" => Some(13),
+                "fourteen" => Some(14),
+                "fifteen" => Some(15),
+                "sixteen" => Some(16),
+                "seventeen" => Some(17),
+                "eighteen" => Some(18),
+                "nineteen" => Some(19),
+                "twenty" => Some(20),
+                "thirty" => Some(30),
+                "forty" => Some(40),
                 "fifty" => Some(50),
+                "sixty" => Some(60),
+                "seventy" => Some(70),
+                "eighty" => Some(80),
+                "ninety" => Some(90),
                 "hundred" => Some(100),
                 _ => None,
             };
@@ -221,12 +255,23 @@ fn extract_number_before_word(text: &str, target_word: &str) -> Option<i64> {
 }
 
 fn parse_number(token: &str) -> Option<i64> {
+    // Preserve an explicit leading minus so "-100" never becomes "100".
+    // Negative claims are rejected (None) — money amounts can't be negative.
+    let negative = token.trim_start().starts_with('-');
+    if negative {
+        return None;
+    }
     let cleaned: String = token.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
     cleaned
         .parse::<f64>()
         .ok()
         .filter(|v| v.is_finite() && *v >= 0.0)
         .map(|v| v as i64)
+}
+
+/// Word-boundary match for ASCII keywords ("void" vs "avoid").
+fn contains_word(haystack: &str, word: &str) -> bool {
+    haystack.split(|c: char| !c.is_alphanumeric()).any(|t| t == word)
 }
 
 /// Sanitize agent-controlled free text before it enters an LLM prompt.
@@ -245,28 +290,54 @@ const MAX_INTENT_LEN: usize = 512;
 pub fn sanitize_intent(raw: &str) -> String {
     // 1. Strip control chars + hard length cap (prompt-bloat / cost DoS).
     let mut out: String = raw.chars().filter(|c| !c.is_control()).take(MAX_INTENT_LEN).collect();
-    // 2. Neutralize fence / template tokens verbatim.
-    for marker in ["```", "<|im_start|>", "<|im_end|>"] {
+    // 2. Neutralize fence / template tokens verbatim, including the
+    // <declared_intent> delimiters used by our own prompt — agent text must
+    // never break out of its data section.
+    for marker in [
+        "```",
+        "<|im_start|>",
+        "<|im_end|>",
+        "<declared_intent>",
+        "</declared_intent>",
+        "<declared-intent>",
+        "</declared-intent>",
+    ] {
         out = out.replace(marker, &format!("[{marker}]"));
     }
-    // 3. Role-injection openers, case-insensitive ("system:", "assistant:").
-    for marker in ["system:", "assistant:", "developer:"] {
+    // 3. Role-injection openers, ASCII case-insensitive ("system:", "assistant:").
+    for marker in ["system:", "assistant:", "developer:", "user:", "tool:"] {
         out = replace_case_insensitive(&out, marker);
     }
     out
 }
 
-/// Case-preserving, case-insensitive literal replacement.
+/// ASCII case-insensitive literal replacement. Operates on bytes without
+/// lowercasing the whole haystack, so multi-byte Unicode can never shift
+/// byte offsets and panic on a non-char boundary.
 fn replace_case_insensitive(haystack: &str, needle: &str) -> String {
-    let lower = haystack.to_lowercase();
-    let mut result = String::with_capacity(haystack.len());
-    let mut rest = 0usize;
-    while let Some(pos) = lower[rest..].find(needle) {
-        result.push_str(&haystack[rest..rest + pos]);
-        result.push_str(&format!("[{needle}]"));
-        rest += pos + needle.len();
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
+    if nb.is_empty() || hb.len() < nb.len() {
+        return haystack.to_string();
     }
-    result.push_str(&haystack[rest..]);
+    let mut result = String::with_capacity(haystack.len());
+    let mut i = 0usize;
+    while i + nb.len() <= hb.len() {
+        let matches = hb[i..i + nb.len()]
+            .iter()
+            .zip(nb.iter())
+            .all(|(h, n)| h.to_ascii_lowercase() == *n);
+        if matches {
+            result.push_str(&format!("[{needle}]"));
+            i += nb.len();
+        } else {
+            // Copy one full char to stay on char boundaries.
+            let ch = haystack[i..].chars().next().unwrap_or('?');
+            result.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    result.push_str(&haystack[i..]);
     result
 }
 
@@ -299,7 +370,7 @@ impl LlmExtractor {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(4))
                 .build()
-                .expect("reqwest client builds"),
+                .unwrap_or_else(|_| reqwest::Client::new()),
             base_url: base_url.into(),
             api_key: api_key.into(),
             model: model.into(),
@@ -334,7 +405,23 @@ impl LlmExtractor {
             .trim();
         let parsed: IntentClaims =
             serde_json::from_str(stripped).map_err(|e| IntentError::ClaimsDecode(e.to_string()))?;
-        Ok(parsed)
+        // Range-check LLM output — it is untrusted input to the risk scorer.
+        let mut claims = parsed;
+        if let Some(a) = claims.amount_paise {
+            if !(0..=i64::MAX / 2).contains(&a) {
+                claims.amount_paise = None;
+            }
+        }
+        if claims.urgency_flags.len() > 10 {
+            claims.urgency_flags.truncate(10);
+        }
+        if let Some(h) = &claims.action_type_hint {
+            const ALLOWED: &[&str] = &["refund", "payout", "payment_link", "transfer", "capture", "void"];
+            if !ALLOWED.contains(&h.as_str()) {
+                claims.action_type_hint = None;
+            }
+        }
+        Ok(claims)
     }
 
     pub async fn extract_llm(

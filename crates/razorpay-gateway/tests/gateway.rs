@@ -135,7 +135,17 @@ async fn spawn_mock_rzp_with_list(first_post: FirstPost, list_items: Option<serd
                     return axum::Json(serde_json::json!({ "items": items }));
                 }
                 if list_state.recorded.load(Ordering::SeqCst) {
-                    axum::Json(serde_json::json!({ "items": [ { "amount": 50_000 } ] }))
+                    // Mirror a real Razorpay: the landed refund echoes OUR
+                    // receipt (decision_id), which is what refund_landed
+                    // matches on. Amount-only items must NOT dedup.
+                    let receipt = list_state
+                        .last_body
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .and_then(|b| b.get("receipt").and_then(|r| r.as_str()).map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    axum::Json(serde_json::json!({ "items": [ { "amount": 50_000, "receipt": receipt } ] }))
                 } else {
                     axum::Json(serde_json::json!({ "items": [] }))
                 }

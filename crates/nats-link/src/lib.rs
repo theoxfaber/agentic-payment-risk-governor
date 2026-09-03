@@ -113,8 +113,11 @@ impl action_service::PolicyEngine for NatsPolicyEngine {
 /// subscription cannot be established, so a worker binary can exit NON-ZERO
 /// instead of sitting idle looking healthy.
 pub async fn run_policy_worker(client: Client) -> anyhow::Result<()> {
+    // Queue group: N replicas share work instead of each evaluating every
+    // request (which would duplicate replies and double-count nothing here
+    // but waste + confuse). One member per message.
     let mut sub = client
-        .subscribe(SUBJECT_POLICY_EVAL)
+        .queue_subscribe(SUBJECT_POLICY_EVAL, "governor-policy".into())
         .await
         .map_err(|e| anyhow::anyhow!("policy worker subscribe failed: {e}"))?;
     info!(subject = SUBJECT_POLICY_EVAL, "policy-engine-worker listening");
@@ -215,6 +218,7 @@ fn fail_safe_evidence(request: &AgentActionRequest, reason: &str) -> GatheredEvi
         },
         customer_history: None,
         recent_velocity: VelocityStats::default(),
+        payment_snapshot: None,
         fetched_at: now_utc(),
     };
     GatheredEvidence {
@@ -305,11 +309,11 @@ pub async fn run_evidence_worker<S: evidence_service::EvidenceStore + 'static>(
     store: Arc<S>,
 ) -> anyhow::Result<()> {
     let mut gather_sub = client
-        .subscribe(SUBJECT_EVIDENCE_GATHER)
+        .queue_subscribe(SUBJECT_EVIDENCE_GATHER, "governor-evidence".into())
         .await
         .map_err(|e| anyhow::anyhow!("evidence worker subscribe failed (gather): {e}"))?;
     let mut record_sub = client
-        .subscribe(SUBJECT_EVIDENCE_RECORD)
+        .queue_subscribe(SUBJECT_EVIDENCE_RECORD, "governor-evidence".into())
         .await
         .map_err(|e| anyhow::anyhow!("evidence worker subscribe failed (record): {e}"))?;
     info!(

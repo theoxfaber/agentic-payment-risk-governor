@@ -100,9 +100,24 @@ impl<S: AuditStore> AuditService<S> {
     pub fn redact_payload(v: serde_json::Value) -> serde_json::Value {
         match v {
             serde_json::Value::Object(m) => {
+                const PII_KEYS: &[&str] = &[
+                    "email",
+                    "phone",
+                    "customer_phone",
+                    "customer_email",
+                    "contact",
+                    "customer_id",
+                    "card",
+                    "card_number",
+                    "account_number",
+                    "fund_account_id",
+                    "narration",
+                    "receipt",
+                    "address",
+                ];
                 let mut out = serde_json::Map::new();
                 for (k, val) in m.into_iter() {
-                    if ["email", "phone", "customer_phone", "customer_email"].contains(&k.as_str()) {
+                    if PII_KEYS.contains(&k.as_str()) {
                         out.insert(k, serde_json::Value::String("***".into()));
                     } else if k == "payment_id" {
                         if let Some(s) = val.as_str() {
@@ -231,16 +246,11 @@ impl<S: AuditStore> AuditService<S> {
 impl<S: AuditStore + 'static> action_service::AuditService for AuditService<S> {
     async fn record(&self, mut record: AuditRecord) -> Result<(), action_service::ActionServiceError> {
         record.payload = Self::redact_payload(record.payload);
-        if record.current_hash.is_empty() {
-            record.current_hash = AuditRecord::compute_hash(
-                record.record_id,
-                record.decision_id,
-                record.event_type,
-                &record.payload,
-                record.created_at,
-                record.previous_hash.as_deref(),
-            );
-        }
+        // Chain linkage is owned by the store. Never trust caller-supplied
+        // previous_hash/current_hash here: precomputing with previous_hash=None
+        // used to break verify_chain for every governor-path record.
+        record.previous_hash = None;
+        record.current_hash = String::new();
         self.store
             .append(record)
             .await

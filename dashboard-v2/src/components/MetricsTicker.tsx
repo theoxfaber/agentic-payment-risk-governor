@@ -26,19 +26,26 @@ function parseMetrics(t: string) {
   const learnedBlock = get('risk_governor_learned_band_total\\{band="block"')
   const learnedBuckets = getAll('risk_governor_learned_p_hat_bucket')
   const scoreBuckets = getAll('risk_governor_risk_score_bucket')
-  return { allow, review, block, exec, total: allow + review + block, psi, learnedReview, learnedBlock, learnedBuckets, scoreBuckets }
+  const latencyAvg = (() => {
+    const s = t.match(/risk_governor_request_duration_ms_sum\s+([0-9.]+)/)
+    const c = t.match(/risk_governor_request_duration_ms_count\s+([0-9]+)/)
+    if (!s || !c) return null
+    const count = parseInt(c[1], 10)
+    return count > 0 ? parseFloat(s[1]) / count : null
+  })()
+  return { allow, review, block, exec, total: allow + review + block, psi, learnedReview, learnedBlock, learnedBuckets, scoreBuckets, latencyAvg }
 }
 
 export default function MetricsTicker() {
   const { data } = useQuery({ queryKey: ['metrics'], queryFn: () => api.metricsText(), refetchInterval: 3000 })
   const m = data
     ? parseMetrics(data)
-    : { allow: 0, review: 0, block: 0, exec: 0, total: 0, psi: null as number | null, learnedReview: 0, learnedBlock: 0, learnedBuckets: [] as number[], scoreBuckets: [] as number[] }
+    : { allow: 0, review: 0, block: 0, exec: 0, total: 0, psi: null as number | null, learnedReview: 0, learnedBlock: 0, learnedBuckets: [] as number[], scoreBuckets: [] as number[], latencyAvg: null as number | null }
   const items = [
-    { label: 'P50', value: '0.42 ms', icon: Gauge },
-    { label: 'P99', value: '1.18 ms', icon: Activity },
-    { label: 'RSS', value: '~18 MB', icon: Cpu },
-    { label: 'Throughput', value: '12.5k req/s', icon: TrendingUp },
+    { label: 'Decisions', value: `${m.total}`, icon: Gauge },
+    { label: 'Avg latency', value: m.latencyAvg !== null ? `${m.latencyAvg.toFixed(1)} ms` : '—', icon: Activity },
+    { label: 'Executions', value: `${m.exec}`, icon: Cpu },
+    { label: 'Learned rev/blk', value: `${m.learnedReview}/${m.learnedBlock}`, icon: TrendingUp },
   ]
   return (
     <div className="flex items-center gap-3 px-4 py-2 bg-slate-900 border-b border-slate-800 text-xs">
@@ -81,7 +88,7 @@ export default function MetricsTicker() {
           ))}
         </span>
       )}
-      <span className="ml-auto font-mono text-[11px] text-slate-500">lr-1.0.0-calib-0.1.0 · CRC τ_clear 0.235 · τ_block 1.0</span>
+      <span className="ml-auto font-mono text-[11px] text-slate-500">live from /metrics · refresh 3s</span>
     </div>
   )
 }

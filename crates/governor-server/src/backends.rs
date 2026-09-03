@@ -126,6 +126,13 @@ impl RazorpayGateway for Gateway {
             Gateway::Http(h) => h.verify_payment(payment_id).await,
         }
     }
+
+    async fn fetch_payment(&self, payment_id: &str) -> Result<Option<PaymentSnapshot>, ActionServiceError> {
+        match self {
+            Gateway::Mock(g) => g.fetch_payment(payment_id).await,
+            Gateway::Http(h) => h.fetch_payment(payment_id).await,
+        }
+    }
 }
 
 impl Gateway {

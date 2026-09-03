@@ -100,6 +100,7 @@ impl action_service::EvidenceService for EvidenceOk {
             },
             customer_history: None,
             recent_velocity: VelocityStats::default(),
+            payment_snapshot: None,
             fetched_at: now_utc(),
         }))
     }

@@ -1,6 +1,6 @@
 use intent_engine::IntentExtractor;
 use risk_governor_types::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -41,12 +41,12 @@ impl RiskEngine {
     ) -> Result<RiskResult, RiskEngineError> {
         let features = self.extract_features(request, evidence);
         let mut risk_score = self.calculate_risk_score(&features);
-        for v in self
-            .typology_scores(&evidence.recent_velocity, &evidence.agent_history)
-            .values()
-        {
-            risk_score = (risk_score + v * 0.05).clamp(0.0, 1.0);
-        }
+        // Typologies are strong fraud signals — take the max (not a diluted
+        // sum) so a maxed card-testing / velocity-spike ring can't hide.
+        // BTreeMap for deterministic iteration.
+        let typs = self.typology_scores(&evidence.recent_velocity, &evidence.agent_history);
+        let worst = typs.values().copied().fold(0.0f64, f64::max);
+        risk_score = (risk_score + worst * 0.30).clamp(0.0, 1.0);
         let claims = match &self.intent_extractor {
             Some(ex) => Some(
                 ex.extract(&request.declared_intent, request.action_type, request.amount)
@@ -120,25 +120,37 @@ impl RiskEngine {
     }
 
     fn calculate_merchant_risk(&self, policy: &MerchantPolicy) -> f64 {
+        // Strict merchants are SAFER. Risk rises when there is no policy
+        // coverage or the velocity gate is loose/misconfigured.
         let mut risk = 0.0f64;
-        if !policy.custom_rules.is_empty() {
-            risk += 0.1;
+        if policy.custom_rules.is_empty() {
+            risk += 0.05;
         }
-        if policy.blocked_countries.len() > 5 {
-            risk += 0.1;
-        }
-        if policy.velocity_threshold_per_hour < 5 {
-            risk += 0.2;
+        if policy.velocity_threshold_per_hour == 0 {
+            risk += 0.20;
+        } else if policy.velocity_threshold_per_hour > 50 {
+            risk += 0.15;
         }
         risk.clamp(0.0, 1.0)
     }
 
+    fn sanitize_rate(v: f64) -> f64 {
+        if !v.is_finite() {
+            0.0
+        } else {
+            v.clamp(0.0, 1.0)
+        }
+    }
+
     fn calculate_agent_risk(&self, agent: &AgentHistory) -> f64 {
         let mut risk = 0.0;
-        risk += agent.refund_rate * 0.3;
-        risk += agent.block_rate * 0.4;
-        risk += agent.review_rate * 0.2;
+        risk += Self::sanitize_rate(agent.refund_rate) * 0.3;
+        risk += Self::sanitize_rate(agent.block_rate) * 0.4;
+        risk += Self::sanitize_rate(agent.review_rate) * 0.2;
         risk += (agent.anomaly_flags.len() as f64 * 0.1).min(0.5);
+        if !risk.is_finite() {
+            return 0.0;
+        }
         risk.clamp(0.0, 1.0)
     }
 
@@ -152,7 +164,10 @@ impl RiskEngine {
         }
     }
     pub fn velocity_spike_score(&self, v: &VelocityStats, agent: &AgentHistory) -> f64 {
-        let expected = (agent.total_actions_30d as f64 / 30.0 / 24.0).max(1.0);
+        // Floor the baseline at 5/hr (the same "normal" center the velocity
+        // z-score uses) so an agent's own low history doesn't turn ordinary
+        // traffic into a spike: 5/hr for a 1/hr agent is normal, 40/hr is not.
+        let expected = (agent.total_actions_30d as f64 / 30.0 / 24.0).max(5.0);
         if v.actions_last_hour as f64 > expected * 5.0 {
             0.9
         } else if v.actions_last_hour as f64 > expected * 3.0 {
@@ -175,9 +190,40 @@ impl RiskEngine {
         let score: f64 = weights.iter().map(|(v, w)| v * w).sum();
         score.clamp(0.0, 1.0)
     }
+}
 
-    pub fn typology_scores(&self, velocity: &VelocityStats, agent: &AgentHistory) -> HashMap<String, f64> {
-        let mut m = HashMap::new();
+/// Word-boundary match: "void" must not fire on "avoid", "test" must not
+/// fire on "latest"/"contest". Splits on non-alphanumeric + underscore.
+fn contains_word(haystack: &str, word: &str) -> bool {
+    haystack.split(|c: char| !c.is_alphanumeric()).any(|t| t == word)
+}
+
+fn normalized_action_token(action: ActionType) -> &'static str {
+    match action {
+        ActionType::Refund => "refund",
+        ActionType::Payout => "payout",
+        ActionType::PaymentLink => "payment_link",
+        ActionType::Transfer => "transfer",
+        ActionType::Capture => "capture",
+        ActionType::Void => "void",
+    }
+}
+
+fn declared_has_action(declared: &str, action: ActionType) -> bool {
+    match action {
+        ActionType::PaymentLink => {
+            declared.contains("payment_link")
+                || declared.contains("payment-link")
+                || declared.contains("paymentlink")
+                || (declared.contains("payment") && declared.contains("link"))
+        }
+        other => contains_word(declared, normalized_action_token(other)),
+    }
+}
+
+impl RiskEngine {
+    pub fn typology_scores(&self, velocity: &VelocityStats, agent: &AgentHistory) -> BTreeMap<String, f64> {
+        let mut m = BTreeMap::new();
         m.insert("card_testing".into(), self.card_testing_score(velocity));
         m.insert("velocity_spike".into(), self.velocity_spike_score(velocity, agent));
         m.insert("rto_cod".into(), if velocity.rto_signals_24h >= 3 { 0.8 } else { 0.0 });
@@ -196,33 +242,25 @@ impl RiskEngine {
         let declared = request.declared_intent.to_lowercase();
         let mut mismatch = 0.0f64;
 
-        // Check if intent matches action type
-        let action_keyword = match request.action_type {
-            ActionType::Refund => "refund",
-            ActionType::Payout => "payout",
-            ActionType::PaymentLink => "payment link",
-            ActionType::Transfer => "transfer",
-            ActionType::Capture => "capture",
-            ActionType::Void => "void",
-        };
-
-        if !declared.contains(action_keyword) {
+        // Word-boundary action check (PaymentLink accepts -, _, or space).
+        if !declared_has_action(&declared, request.action_type) {
             mismatch += 0.3;
         }
 
-        // Check for suspicious keywords
+        // Suspicious keywords — word-boundary so "test" doesn't fire on
+        // "latest"/"contest" and "void" doesn't fire on "avoid".
         let suspicious = ["urgent", "immediate", "bypass", "override", "emergency", "test", "fake"];
         for word in suspicious {
-            if declared.contains(word) {
+            if contains_word(&declared, word) {
                 mismatch += 0.1;
             }
         }
 
         // Check amount consistency with intent
-        if declared.contains("small") && request.amount > 10000 {
+        if contains_word(&declared, "small") && request.amount > 10000 {
             mismatch += 0.2;
         }
-        if declared.contains("large") && request.amount < 1000 {
+        if contains_word(&declared, "large") && request.amount < 1000 {
             mismatch += 0.2;
         }
 
@@ -232,14 +270,17 @@ impl RiskEngine {
             if let Some(claimed_amount) = c.amount_paise {
                 let claimed = claimed_amount as f64;
                 let actual = request.amount as f64;
-                let relative_diff = (claimed - actual).abs() / actual.max(1.0);
+                let denom = actual.abs().max(claimed.abs()).max(1.0);
+                let relative_diff = (claimed - actual).abs() / denom;
                 if relative_diff > 0.10 {
                     mismatch += 0.3; // the stated reason and the money disagree
                 }
             }
             if let Some(hint) = &c.action_type_hint {
-                let actual_kind = format!("{:?}", request.action_type).to_lowercase();
-                if hint != &actual_kind {
+                // Normalize both sides: "paymentlink" == "payment_link".
+                let norm = |s: &str| s.to_lowercase().replace(['-', ' '], "_");
+                let actual_kind = norm(normalized_action_token(request.action_type));
+                if norm(hint) != actual_kind {
                     mismatch += 0.2;
                 }
             }
@@ -312,6 +353,7 @@ mod tests {
                 actions_last_hour: hourly_actions,
                 ..Default::default()
             },
+            payment_snapshot: None,
             fetched_at: now_utc(),
         }
     }

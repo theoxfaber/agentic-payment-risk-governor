@@ -136,9 +136,11 @@ pub(crate) mod test_support {
             audit: Arc::new(AuditService::new(Arc::new(AuditBackend::Mem(audit_store)))),
             gateway,
             decisions: RwLock::new(lru::LruCache::new(NonZeroUsize::new(1_000).unwrap())),
+            idempotency: tokio::sync::Mutex::new(Map::new()),
             metrics: Arc::new(Metrics::default()),
             pg: None,
             api_key: TEST_KEY.into(),
+            review_key: None,
             anchor_key: None,
             webhook_secret: None,
             graph,
@@ -146,15 +148,22 @@ pub(crate) mod test_support {
         })
     }
 
-    pub(crate) fn submit_body(agent: &str, amount: i64) -> axum::Json<crate::routes::SubmitAction> {
-        axum::Json(crate::routes::SubmitAction {
-            agent_id: agent.into(),
-            merchant_id: "merchant-001".into(),
-            action_type: ActionType::Refund,
-            amount,
-            currency: Some("INR".into()),
-            declared_intent: "refund for order #1".into(),
-            context: serde_json::json!({ "payment_id": "pay_test_123", "payment_state": "captured", "captured_paise": 500000, "refunded_paise": 0 }),
-        })
+    pub(crate) fn submit_body(
+        agent: &str,
+        amount: i64,
+    ) -> (axum::http::HeaderMap, axum::Json<crate::routes::SubmitAction>) {
+        (
+            axum::http::HeaderMap::new(),
+            axum::Json(crate::routes::SubmitAction {
+                agent_id: agent.into(),
+                merchant_id: "merchant-001".into(),
+                action_type: ActionType::Refund,
+                amount,
+                currency: Some("INR".into()),
+                declared_intent: "refund for order #1".into(),
+                context: serde_json::json!({ "payment_id": "pay_test_123", "payment_state": "captured", "captured_paise": 500000, "refunded_paise": 0 }),
+                idempotency_key: None,
+            }),
+        )
     }
 }

@@ -28,9 +28,17 @@ pub(crate) struct AppState {
     /// Bounded to MAX_CACHED_DECISIONS entries (LRU eviction); old decisions
     /// survive in Postgres. Prevents unbounded memory growth in production.
     pub decisions: RwLock<lru::LruCache<Uuid, Decision>>,
+    /// Request-level idempotency: Idempotency-Key → decision_id. A retried
+    /// POST with the same key returns the original decision instead of
+    /// minting a fresh decision_id (which would defeat gateway dedup).
+    pub idempotency: tokio::sync::Mutex<HashMap<String, Uuid>>,
     pub metrics: Arc<Metrics>,
     pub pg: Option<Arc<pg_store::PgStore>>,
     pub api_key: String,
+    /// Separate key for human approvals. When set, POST
+    /// /v1/decisions/:id/approve requires it; the submit key cannot
+    /// self-approve. Unset → single-key mode (backward compatible).
+    pub review_key: Option<String>,
     pub anchor_key: Option<Vec<u8>>,
     pub webhook_secret: Option<String>,
     pub graph: Arc<risk_graph::PropertyGraph>,
@@ -178,11 +186,19 @@ impl Metrics {
             let edges = ["0.2", "0.4", "0.6", "0.8", "1.0"];
             out.push_str(
                 "# HELP risk_governor_risk_score_bucket Decisions by risk-score bucket.\n\
-                 # TYPE risk_governor_risk_score_bucket counter\n",
+                 # TYPE risk_governor_risk_score_bucket histogram\n",
             );
-            for (edge, p) in edges.iter().zip(props.iter()) {
-                out.push_str(&format!("risk_governor_risk_score_bucket{{le=\"{edge}\"}} {:.6}\n", p));
+            // Cumulative counts (Prometheus histogram convention) + total.
+            let counts: Vec<u64> = self.score_buckets.iter().map(|b| b.load(Relaxed)).collect();
+            let mut cum = 0u64;
+            for (edge, c) in edges.iter().zip(counts.iter()) {
+                cum += c;
+                out.push_str(&format!("risk_governor_risk_score_bucket{{le=\"{edge}\"}} {cum}\n"));
             }
+            let total: u64 = counts.iter().sum();
+            out.push_str(&format!("risk_governor_risk_score_bucket{{le=\"+Inf\"}} {total}\n"));
+            out.push_str(&format!("risk_governor_risk_score_count {total}\n"));
+            let _ = props;
             if let Some(psi_value) = self.current_psi() {
                 out.push_str(
                     "# HELP risk_governor_score_psi Population Stability Index of the risk-score distribution vs SCORE_REFERENCE_JSON.\n\

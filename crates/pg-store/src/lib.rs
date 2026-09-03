@@ -26,18 +26,13 @@ const SCHEMA: &[&str] = &[
         previous_hash TEXT,
         current_hash  TEXT NOT NULL DEFAULT ''
     )",
-    "DO $$ BEGIN CREATE ROLE app_role; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
-    "REVOKE UPDATE, DELETE ON audit_records FROM PUBLIC",
-    "REVOKE UPDATE, DELETE ON audit_records FROM app_role",
-    "GRANT SELECT, INSERT ON audit_records TO app_role",
-    "GRANT SELECT, INSERT, UPDATE ON decisions TO app_role",
-    "CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_records(decision_id)",
     "CREATE TABLE IF NOT EXISTS decisions (
         decision_id UUID PRIMARY KEY,
         outcome     TEXT NOT NULL,
         data        JSONB NOT NULL,
         created_at  TIMESTAMPTZ NOT NULL
     )",
+    "CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_records(decision_id)",
     "CREATE TABLE IF NOT EXISTS evidence_agents (
         agent_id TEXT PRIMARY KEY,
         data     JSONB NOT NULL
@@ -56,6 +51,12 @@ const SCHEMA: &[&str] = &[
         amount   BIGINT NOT NULL
     )",
     "CREATE INDEX IF NOT EXISTS idx_action_log_agent_ts ON action_log(agent_id, ts)",
+    // Privilege hardening is best-effort: managed Postgres (RDS/Neon/Supabase)
+    // often forbids CREATE ROLE / REVOKE. Tables work without it; grants apply
+    // when the deploy role is privileged enough.
+    "DO $$ BEGIN CREATE ROLE app_role; EXCEPTION WHEN duplicate_object THEN NULL; END $$",
+    "GRANT SELECT, INSERT ON audit_records TO app_role",
+    "GRANT SELECT, INSERT, UPDATE ON decisions TO app_role",
 ];
 
 impl PgStore {
@@ -72,7 +73,16 @@ impl PgStore {
 
     async fn migrate(&self) -> anyhow::Result<()> {
         for stmt in SCHEMA {
-            sqlx::query(stmt).execute(&self.pool).await?;
+            // GRANT/ROLE statements fail on managed Postgres without superuser —
+            // log and continue; tables/indexes must still succeed.
+            let is_privilege = stmt.contains("ROLE") || stmt.starts_with("GRANT") || stmt.starts_with("REVOKE");
+            match sqlx::query(stmt).execute(&self.pool).await {
+                Ok(_) => {}
+                Err(e) if is_privilege => {
+                    tracing::warn!("pg-store privilege statement skipped: {e}");
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         tracing::info!("pg-store schema ready ({} objects ensured)", SCHEMA.len());
         Ok(())

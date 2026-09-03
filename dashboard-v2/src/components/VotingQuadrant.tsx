@@ -4,12 +4,17 @@ type Props = {
   policy: { verdict: string; matched_rules: unknown[]; violated_thresholds: string[] }
   risk: { risk_score: number; intent_mismatch_score: number; features: Record<string, number> }
   evidence: { agent_history: { refund_rate: number; anomaly_flags: string[] }; recent_velocity: { actions_last_hour: number } }
+  graph?: { clusterSize?: number | null; method?: string | null } | null
+  investigation?: { forWeight?: number | null; againstWeight?: number | null } | null
 }
 
-export default function VotingQuadrant({ policy, risk, evidence }: Props) {
+export default function VotingQuadrant({ policy, risk, evidence, graph, investigation }: Props) {
   const policyOk = policy.verdict === 'allow'
   const riskLevel = risk.risk_score
   const riskColor = riskLevel > 0.5 ? 'rose' : riskLevel > 0.25 ? 'amber' : 'emerald'
+  const clusterLabel = graph?.clusterSize != null ? `cluster size ${graph.clusterSize} · ${graph.method ?? 'union-find'}` : 'cluster: no live graph data (demo illustration)'
+  const forW = investigation?.forWeight
+  const againstW = investigation?.againstWeight
 
   return (
     <div className="grid grid-cols-2 gap-3">
@@ -68,7 +73,7 @@ export default function VotingQuadrant({ policy, risk, evidence }: Props) {
               </div>
             ))}
           </div>
-          <span className="font-mono text-xs text-slate-400">cluster size 3 · union-find</span>
+          <span className="font-mono text-xs text-slate-400">{clusterLabel}</span>
         </div>
         <div className="mt-2 font-mono text-[11px] text-slate-500">shared device / address / instrument → transitive merge</div>
       </div>
@@ -78,10 +83,10 @@ export default function VotingQuadrant({ policy, risk, evidence }: Props) {
           <Scale className="w-3.5 h-3.5" /> INVESTIGATION
         </div>
         <div className="mt-2 flex gap-2 font-mono text-xs">
-          <span className="flex-1 rounded bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 text-emerald-300 text-center">for 0.42</span>
-          <span className="flex-1 rounded bg-rose-500/10 border border-rose-500/20 px-2 py-1 text-rose-300 text-center">against 0.58</span>
+          <span className="flex-1 rounded bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 text-emerald-300 text-center">for {forW != null ? forW.toFixed(2) : '—'}</span>
+          <span className="flex-1 rounded bg-rose-500/10 border border-rose-500/20 px-2 py-1 text-rose-300 text-center">against {againstW != null ? againstW.toFixed(2) : '—'}</span>
         </div>
-        <div className="mt-2 font-mono text-[11px] text-slate-400">confidence dampened on partial visibility · hold on conflict</div>
+        <div className="mt-2 font-mono text-[11px] text-slate-400">{forW == null ? 'demo illustration — wire investigation weights to show live values' : 'confidence dampened on partial visibility · hold on conflict'}</div>
       </div>
     </div>
   )

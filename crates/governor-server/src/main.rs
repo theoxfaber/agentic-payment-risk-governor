@@ -25,7 +25,7 @@ mod learned;
 mod routes;
 mod state;
 
-use auth::resolve_api_key;
+use auth::{resolve_api_key, resolve_review_key};
 use axum::{
     extract::{DefaultBodyLimit, Request, State},
     middleware::Next,
@@ -80,17 +80,33 @@ fn build_router(state: Arc<AppState>) -> Router {
 
 async fn rate_limit(State(_state): State<Arc<AppState>>, req: Request, next: Next) -> impl IntoResponse {
     use governor::state::keyed::DashMapStateStore;
+    // Liveness/dashboard/assets never count against the money-moving budget —
+    // otherwise a busy server 429s its own healthcheck into a kill-loop.
+    let path = req.uri().path().to_string();
+    if path == "/health" || path == "/metrics" || path == "/" || path == "/dashboard" || path.starts_with("/assets") {
+        return next.run(req).await;
+    }
     static LIMITER: OnceLock<RateLimiter<String, DashMapStateStore<String>, DefaultClock>> = OnceLock::new();
     let limiter = LIMITER.get_or_init(|| {
         RateLimiter::keyed(Quota::per_second(NonZeroU32::new(10).unwrap()).allow_burst(NonZeroU32::new(20).unwrap()))
     });
+    // Normalize: `Authorization: Bearer K` and `X-API-Key: K` share one bucket.
     let key = req
         .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
-        .or_else(|| req.headers().get("authorization").and_then(|v| v.to_str().ok()))
-        .unwrap_or("anon")
-        .to_string();
+        .map(|v| v.trim().to_string())
+        .or_else(|| {
+            req.headers()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|h| {
+                    h.strip_prefix("Bearer ")
+                        .map(|s| s.trim().to_string())
+                        .or_else(|| Some(h.trim().to_string()))
+                })
+        })
+        .unwrap_or_else(|| "anon".to_string());
     if limiter.check_key(&key).is_err() {
         return (
             axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -115,6 +131,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Persistence backend: DATABASE_URL → Postgres (survives restarts);
     // unset → in-memory (dev/tests). Same pipeline either way.
+    // REQUIRE_PG=1 makes a missing DATABASE_URL a boot error instead of a
+    // silent downgrade to volatile memory (the classic Fly mis-deploy).
+    if std::env::var("REQUIRE_PG").as_deref() == Ok("1") && std::env::var("DATABASE_URL").unwrap_or_default().is_empty()
+    {
+        anyhow::bail!("REQUIRE_PG=1 but DATABASE_URL is not set — refusing to boot with volatile memory");
+    }
     let pg = match std::env::var("DATABASE_URL") {
         Ok(url) if !url.is_empty() => {
             let store = Arc::new(PgStore::connect(&url).await?);
@@ -175,6 +197,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let gateway = backends::pick_gateway();
+    // REQUIRE_GATEWAY=1 refuses the silent MockGateway fallback so a prod
+    // deploy without RAZORPAY_KEY_ID/SECRET fails loudly instead of judging
+    // real money with a mock.
+    if std::env::var("REQUIRE_GATEWAY").as_deref() == Ok("1") {
+        match &*gateway {
+            backends::Gateway::Http(_) => {}
+            backends::Gateway::Mock(_) => {
+                anyhow::bail!("REQUIRE_GATEWAY=1 but RAZORPAY_KEY_ID/SECRET are not set — refusing MockGateway");
+            }
+        }
+    }
 
     // Intent extraction: LLM-backed when LLM_API_KEY is configured (claims
     // are evidence only — see intent-engine); deterministic heuristic
@@ -227,9 +260,11 @@ async fn main() -> anyhow::Result<()> {
         audit: Arc::new(audit_service::AuditService::new(Arc::new(audit_backend))),
         gateway,
         decisions: RwLock::new(decisions),
+        idempotency: tokio::sync::Mutex::new(HashMap::new()),
         metrics: Arc::new(Metrics::default()),
         pg,
         api_key: resolve_api_key(),
+        review_key: resolve_review_key(),
         anchor_key,
         webhook_secret,
         graph,

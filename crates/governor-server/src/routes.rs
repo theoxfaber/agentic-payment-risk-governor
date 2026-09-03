@@ -45,10 +45,16 @@ pub(crate) struct SubmitAction {
     pub declared_intent: String,
     #[serde(default)]
     pub context: serde_json::Value,
+    /// Optional client idempotency key (also accepted via Idempotency-Key /
+    /// X-Idempotency-Key header). Retries with the same key return the
+    /// original decision instead of moving money twice.
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
 }
 
 pub(crate) async fn submit_action(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(body): Json<SubmitAction>,
 ) -> Result<Json<Decision>, ApiError> {
     let mut context = body.context;
@@ -76,6 +82,29 @@ pub(crate) async fn submit_action(
     // 400, never a 500.
     action_service::validate_request(&request).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
+    // Request-level idempotency: header wins, body key is the fallback.
+    // Same key → same decision, no second money movement.
+    let idem_key = headers
+        .get("idempotency-key")
+        .or_else(|| headers.get("x-idempotency-key"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            body.idempotency_key
+                .clone()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(ref key) = idem_key {
+        let guard = state.idempotency.lock().await;
+        if let Some(cached_id) = guard.get(key) {
+            if let Some(cached) = state.decisions.write().expect("decisions lock").get(cached_id).cloned() {
+                return Ok(Json(cached));
+            }
+        }
+    }
+
     let start = std::time::Instant::now();
     let decision = state.svc.process_action(request.clone()).await?;
     state.metrics.record_latency_ms(start.elapsed().as_secs_f64() * 1000.0);
@@ -92,6 +121,9 @@ pub(crate) async fn submit_action(
         .write()
         .expect("decisions lock")
         .put(decision.decision_id, decision.clone());
+    if let Some(ref key) = idem_key {
+        state.idempotency.lock().await.insert(key.clone(), decision.decision_id);
+    }
     if let Some(pg) = &state.pg {
         if let Err(e) = pg.upsert_decision(&decision).await {
             tracing::error!(decision_id = %decision.decision_id, "decision persist failed: {e}");
@@ -132,11 +164,10 @@ pub(crate) async fn razorpay_webhook(
         .ok_or_else(|| ApiError::internal("webhook not configured: set WEBHOOK_SECRET".into()))?;
     let sig = headers
         .get("x-razorpay-signature")
-        .or_else(|| headers.get("X-Razorpay-Signature"))
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| ApiError::bad_request("missing X-Razorpay-Signature".into()))?;
+        .ok_or_else(|| ApiError::unauthorized("missing X-Razorpay-Signature".into()))?;
     if !razorpay_gateway::verify_webhook_signature(&body, sig, secret) {
-        return Err(ApiError::bad_request("invalid webhook signature".into()));
+        return Err(ApiError::unauthorized("invalid webhook signature".into()));
     }
     let payload: serde_json::Value =
         serde_json::from_slice(&body).map_err(|e| ApiError::bad_request(format!("invalid json: {e}")))?;
@@ -480,6 +511,12 @@ impl ApiError {
             message,
         }
     }
+    pub(crate) fn unauthorized(message: String) -> Self {
+        Self {
+            status: axum::http::StatusCode::UNAUTHORIZED,
+            message,
+        }
+    }
     pub(crate) fn not_found(id: Uuid) -> Self {
         Self {
             status: axum::http::StatusCode::NOT_FOUND,
@@ -511,21 +548,20 @@ mod tests {
     use super::*;
     use crate::bootstrap::test_support::{submit_body, test_state};
 
+    async fn submit(state: Arc<AppState>, agent: &str, amount: i64) -> Decision {
+        let (hdrs, body) = submit_body(agent, amount);
+        submit_action(State(state), hdrs, body).await.unwrap().0
+    }
+
     #[tokio::test]
     async fn metrics_counters_track_decision_outcomes() {
         let state = test_state().await;
         // trusted agent, small amount → allow
-        let _ = submit_action(State(state.clone()), submit_body("agent-trusted-01", 50_000))
-            .await
-            .unwrap();
+        let _ = submit(state.clone(), "agent-trusted-01", 50_000).await;
         // trusted agent above approval threshold → review
-        let _ = submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
-            .await
-            .unwrap();
+        let _ = submit(state.clone(), "agent-trusted-01", 150_000).await;
         // over hard cap → block
-        let _ = submit_action(State(state.clone()), submit_body("agent-trusted-01", 600_000))
-            .await
-            .unwrap();
+        let _ = submit(state.clone(), "agent-trusted-01", 600_000).await;
 
         let body = state.metrics.prometheus();
         assert!(body.contains("risk_governor_decisions_total{outcome=\"allow\"} 1"));
@@ -538,9 +574,7 @@ mod tests {
     #[tokio::test]
     async fn approval_execution_increments_gateway_counter() {
         let state = test_state().await;
-        let decision = submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
-            .await
-            .unwrap();
+        let decision = submit(state.clone(), "agent-trusted-01", 150_000).await;
         assert_eq!(decision.decision, DecisionOutcome::Review);
 
         let _ = approve_decision(
@@ -564,9 +598,7 @@ mod tests {
     #[tokio::test]
     async fn double_approval_is_rejected() {
         let state = test_state().await;
-        let decision = submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
-            .await
-            .unwrap();
+        let decision = submit(state.clone(), "agent-trusted-01", 150_000).await;
 
         let first = approve_decision(
             State(state.clone()),
@@ -605,9 +637,7 @@ mod tests {
     #[tokio::test]
     async fn replay_returns_decision_with_full_trail() {
         let state = test_state().await;
-        let decision = submit_action(State(state.clone()), submit_body("agent-trusted-01", 50_000))
-            .await
-            .unwrap();
+        let decision = submit(state.clone(), "agent-trusted-01", 50_000).await;
 
         let payload = replay_decision(State(state), Path(decision.decision_id)).await.unwrap();
         let json: serde_json::Value = payload.0;
@@ -634,7 +664,8 @@ mod tests {
         let state = test_state().await;
         // negative amount fails validate_request before any pipeline runs —
         // a caller mistake must surface as 400, not a server error.
-        let result = submit_action(State(state), submit_body("agent-trusted-01", -1)).await;
+        let (hdrs, body) = submit_body("agent-trusted-01", -1);
+        let result = submit_action(State(state), hdrs, body).await;
         assert!(
             matches!(result, Err(ref e) if e.status == axum::http::StatusCode::BAD_REQUEST),
             "validation failure maps to 400"
@@ -648,9 +679,7 @@ mod tests {
     #[tokio::test]
     async fn concurrent_approvals_execute_exactly_once() {
         let state = test_state().await;
-        let decision = submit_action(State(state.clone()), submit_body("agent-trusted-01", 150_000))
-            .await
-            .unwrap();
+        let decision = submit(state.clone(), "agent-trusted-01", 150_000).await;
         assert_eq!(decision.decision, DecisionOutcome::Review);
 
         let mut handles = Vec::new();

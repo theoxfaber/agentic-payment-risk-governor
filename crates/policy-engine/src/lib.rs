@@ -61,44 +61,74 @@ impl PolicyEngine {
                         request.amount
                     ));
                 }
-                // Payment state gate: refunds require a captured payment — fail-closed if missing
-                match request
-                    .context
-                    .get("payment_state")
-                    .or_else(|| request.context.get("paymentStatus"))
-                    .or_else(|| request.context.get("payment_status"))
-                    .and_then(|v| v.as_str())
-                {
-                    Some(state) if state.eq_ignore_ascii_case("captured") => {}
-                    Some(state) => violated_thresholds.push(format!(
-                        "payment state '{}' is not captured — refund requires captured",
-                        state
-                    )),
-                    None => violated_thresholds
-                        .push("missing payment_state — refund requires captured (fail-closed)".into()),
-                }
-                // Integer paise balance check: refund <= captured - refunded — fail-closed if captured missing
-                let captured = Self::extract_paise(
-                    &request.context,
-                    &["captured_paise", "captured_amount", "amount_captured"],
-                );
-                let refunded = Self::extract_paise(
-                    &request.context,
-                    &["refunded_paise", "refunded_amount", "amount_refunded"],
-                )
-                .unwrap_or(0);
-                match captured {
-                    Some(cap) => {
-                        let available = cap.saturating_sub(refunded);
-                        if request.amount > available {
-                            violated_thresholds.push(format!(
-                                "refund amount {} exceeds available balance {} (captured {} - refunded {})",
-                                request.amount, available, cap, refunded
-                            ));
-                        }
+                // Ground truth: Razorpay payment_snapshot (fetched via GET /v1/payments/{id}) is authoritative.
+                // Context-declared payment_state/captured_paise is treated as unverified hint only.
+                if let Some(snap) = &evidence.payment_snapshot {
+                    if snap.payment_id != request.context.get("payment_id").and_then(|v| v.as_str()).unwrap_or("") {
+                        violated_thresholds.push(format!(
+                            "payment_id mismatch: request {} vs verified {}",
+                            request.context.get("payment_id").and_then(|v| v.as_str()).unwrap_or(""),
+                            snap.payment_id
+                        ));
                     }
-                    None => violated_thresholds
-                        .push("missing captured_paise — refund requires captured amount (fail-closed)".into()),
+                    if !snap.captured || !snap.status.eq_ignore_ascii_case("captured") {
+                        violated_thresholds.push(format!(
+                            "verified payment {} status '{}' is not captured — refund requires captured (Razorpay ground truth)",
+                            snap.payment_id, snap.status
+                        ));
+                    }
+                    let captured = snap.captured_amount.unwrap_or(snap.amount);
+                    let refunded = snap.refunded_amount.unwrap_or(0);
+                    let available = captured.saturating_sub(refunded);
+                    if request.amount > available {
+                        violated_thresholds.push(format!(
+                            "refund amount {} exceeds verified available balance {} (captured {} - refunded {}) from Razorpay",
+                            request.amount, available, captured, refunded
+                        ));
+                    }
+                } else {
+                    // No verified snapshot (MockGateway or fetch failed): fall back to self-declared context, but mark as unverified.
+                    match request
+                        .context
+                        .get("payment_state")
+                        .or_else(|| request.context.get("paymentStatus"))
+                        .or_else(|| request.context.get("payment_status"))
+                        .and_then(|v| v.as_str())
+                    {
+                        Some(state) if state.eq_ignore_ascii_case("captured") => {}
+                        Some(state) => violated_thresholds.push(format!(
+                            "payment state '{}' is not captured — refund requires captured (unverified, no Razorpay snapshot)",
+                            state
+                        )),
+                        None => violated_thresholds
+                            .push("missing payment_state — refund requires captured (fail-closed)".into()),
+                    }
+                    let captured = Self::extract_paise(
+                        &request.context,
+                        &["captured_paise", "captured_amount", "amount_captured"],
+                    );
+                    let refunded = Self::extract_paise(
+                        &request.context,
+                        &["refunded_paise", "refunded_amount", "amount_refunded"],
+                    )
+                    .unwrap_or(0);
+                    match captured {
+                        Some(cap) => {
+                            let available = cap.saturating_sub(refunded);
+                            if request.amount > available {
+                                violated_thresholds.push(format!(
+                                    "refund amount {} exceeds available balance {} (captured {} - refunded {}) (unverified)",
+                                    request.amount, available, cap, refunded
+                                ));
+                            }
+                        }
+                        None => violated_thresholds
+                            .push("missing captured_paise — refund requires captured amount (fail-closed)".into()),
+                    }
+                    // In production with live gateway, missing snapshot should be REVIEW, not silent ALLOW.
+                    if request.context.get("payment_id").and_then(|v| v.as_str()).is_some() {
+                        matched_rules.push("unverified_payment_snapshot".into());
+                    }
                 }
                 if request.amount > policy.max_refund_amount {
                     violated_thresholds.push(format!(
@@ -135,12 +165,17 @@ impl PolicyEngine {
             ));
         }
 
-        // Check country restrictions (from context)
+        // Check country restrictions (from context) — case-insensitive
+        // ("KP" vs "kp" must not bypass a block).
         if let Some(country) = request.context.get("country").and_then(|v| v.as_str()) {
-            if policy.blocked_countries.contains(&country.to_string()) {
+            let norm = country.trim().to_uppercase();
+            let blocked = policy.blocked_countries.iter().any(|c| c.trim().to_uppercase() == norm);
+            if blocked {
                 violated_thresholds.push(format!("country {} is blocked", country));
             }
-            if !policy.allowed_countries.is_empty() && !policy.allowed_countries.contains(&country.to_string()) {
+            if !policy.allowed_countries.is_empty()
+                && !policy.allowed_countries.iter().any(|c| c.trim().to_uppercase() == norm)
+            {
                 violated_thresholds.push(format!("country {} not in allowed list", country));
             }
         }
@@ -358,6 +393,7 @@ mod tests {
             merchant_policy: p,
             customer_history: None,
             recent_velocity: VelocityStats::default(),
+            payment_snapshot: None,
             fetched_at: now_utc(),
         }
     }

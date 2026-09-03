@@ -64,10 +64,20 @@ impl<S: AuditStore + 'static> WebhookConsumer<S> {
             .audit
             .record(
                 AuditEventType::WebhookReceived,
-                payload
-                    .pointer("/payload/refund/entity/notes/decision_id")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| Uuid::parse_str(s).ok()),
+                // decision_id rides in notes for refunds; try every known
+                // location so payment/payout/order events link too.
+                [
+                    "/payload/refund/entity/notes/decision_id",
+                    "/payload/payment/entity/notes/decision_id",
+                    "/payload/payout/entity/notes/decision_id",
+                    "/payload/order/entity/notes/decision_id",
+                    "/payload/refund/entity/receipt",
+                    "/payload/payment/entity/receipt",
+                ]
+                .iter()
+                .filter_map(|p| payload.pointer(p).and_then(|v| v.as_str()))
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .next(),
                 payload,
             )
             .await;

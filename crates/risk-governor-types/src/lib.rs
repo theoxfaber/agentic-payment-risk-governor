@@ -56,7 +56,9 @@ pub fn canonical_json_bytes(val: &serde_json::Value) -> Vec<u8> {
                 if i > 0 {
                     buf.push(b',');
                 }
-                buf.extend(serde_json::to_vec(k).unwrap_or_default());
+                // String keys always serialize — a failure is a bug, never
+                // silent empty bytes (which would cause hash collisions).
+                buf.extend(serde_json::to_vec(k).expect("json string key serializes"));
                 buf.push(b':');
                 buf.extend(canonical_json_bytes(&map[*k]));
             }
@@ -75,7 +77,35 @@ pub fn canonical_json_bytes(val: &serde_json::Value) -> Vec<u8> {
             buf.push(b']');
             buf
         }
-        other => serde_json::to_vec(other).unwrap_or_default(),
+        other => serde_json::to_vec(other).expect("json value serializes"),
+    }
+}
+
+/// Serde wire name for an action type (never Debug — `PaymentLink` Debug is
+/// `PaymentLink` but wire is `payment_link`; hashing Debug diverges).
+pub fn action_type_name(a: ActionType) -> &'static str {
+    match a {
+        ActionType::Refund => "refund",
+        ActionType::Payout => "payout",
+        ActionType::PaymentLink => "payment_link",
+        ActionType::Transfer => "transfer",
+        ActionType::Capture => "capture",
+        ActionType::Void => "void",
+    }
+}
+
+/// Serde wire name for an audit event type.
+pub fn audit_event_name(e: AuditEventType) -> &'static str {
+    match e {
+        AuditEventType::ActionRequested => "action_requested",
+        AuditEventType::PolicyEvaluated => "policy_evaluated",
+        AuditEventType::RiskScored => "risk_scored",
+        AuditEventType::GraphAnalyzed => "graph_analyzed",
+        AuditEventType::DecisionMade => "decision_made",
+        AuditEventType::HumanReviewed => "human_reviewed",
+        AuditEventType::RazorpayCalled => "razorpay_called",
+        AuditEventType::WebhookReceived => "webhook_received",
+        AuditEventType::OutcomeRecorded => "outcome_recorded",
     }
 }
 
@@ -94,7 +124,7 @@ impl AgentActionRequest {
         };
         lp(self.agent_id.as_bytes());
         lp(self.merchant_id.as_bytes());
-        lp(format!("{:?}", self.action_type).as_bytes());
+        lp(action_type_name(self.action_type).as_bytes());
         lp(&self.amount.to_be_bytes());
         lp(self.currency.to_uppercase().as_bytes());
         lp(self.declared_intent.as_bytes());
@@ -194,11 +224,27 @@ pub struct VelocityStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentSnapshot {
+    // Redacted audit trails store `payment_id_sha256` instead of the raw id
+    // (DPDP) — accept either so replay decodes both live and redacted snaps.
+    #[serde(default, alias = "payment_id_sha256")]
+    pub payment_id: String,
+    pub status: String,
+    pub amount: i64,
+    pub captured: bool,
+    pub captured_amount: Option<i64>,
+    pub refunded_amount: Option<i64>,
+    pub fetched_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evidence {
     pub agent_history: AgentHistory,
     pub merchant_policy: MerchantPolicy,
     pub customer_history: Option<CustomerHistory>,
     pub recent_velocity: VelocityStats,
+    #[serde(default)]
+    pub payment_snapshot: Option<PaymentSnapshot>,
     pub fetched_at: DateTime<Utc>,
 }
 
@@ -282,6 +328,9 @@ pub struct AuditRecord {
 
 impl AuditRecord {
     /// Computes SHA-256 hash forming a cryptographic tamper-evident audit chain.
+    /// All fields are length-prefixed (no `|` delimiters, no "GENESIS"
+    /// sentinel string) and timestamps use nanos since epoch (not RFC3339
+    /// text, whose precision/offset formatting is not canonical).
     pub fn compute_hash(
         record_id: Uuid,
         decision_id: Option<Uuid>,
@@ -292,17 +341,16 @@ impl AuditRecord {
     ) -> String {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(previous_hash.unwrap_or("GENESIS").as_bytes());
-        hasher.update(b"|");
-        hasher.update(record_id.to_string().as_bytes());
-        hasher.update(b"|");
-        hasher.update(decision_id.map(|d| d.to_string()).unwrap_or_default().as_bytes());
-        hasher.update(b"|");
-        hasher.update(format!("{:?}", event_type).as_bytes());
-        hasher.update(b"|");
-        hasher.update(canonical_json_bytes(payload));
-        hasher.update(b"|");
-        hasher.update(created_at.to_rfc3339().as_bytes());
+        let mut lp = |data: &[u8]| {
+            hasher.update((data.len() as u64).to_be_bytes());
+            hasher.update(data);
+        };
+        lp(previous_hash.unwrap_or_default().as_bytes());
+        lp(record_id.as_bytes());
+        lp(decision_id.map(|d| d.to_string()).unwrap_or_default().as_bytes());
+        lp(audit_event_name(event_type).as_bytes());
+        lp(&canonical_json_bytes(payload));
+        lp(&created_at.timestamp_nanos_opt().unwrap_or(0).to_be_bytes());
         hex::encode(hasher.finalize())
     }
 }

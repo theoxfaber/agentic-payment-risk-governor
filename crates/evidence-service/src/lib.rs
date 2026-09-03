@@ -159,7 +159,10 @@ impl EvidenceStore for InMemoryEvidenceStore {
         while log.len() >= MAX_ACTION_LOG {
             log.pop_front();
         }
-        log.push_back((request.agent_id.clone(), request.timestamp, request.amount));
+        // Ingest time, not client-supplied timestamp: a skewed/malicious clock
+        // must not be able to poison velocity windows (future ts never prunes,
+        // backdated ts prunes instantly).
+        log.push_back((request.agent_id.clone(), Utc::now(), request.amount));
         Ok(())
     }
 
@@ -203,6 +206,7 @@ impl<S: EvidenceStore> EvidenceService<S> {
             merchant_policy,
             customer_history,
             recent_velocity,
+            payment_snapshot: None,
             fetched_at: now_utc(),
         })
     }

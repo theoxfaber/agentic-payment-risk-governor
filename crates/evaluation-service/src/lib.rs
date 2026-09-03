@@ -160,11 +160,17 @@ impl EvaluationService {
             merchant_policy,
             customer_history,
             recent_velocity,
+            payment_snapshot: None,
             fetched_at: now_utc(),
         })
     }
 }
 
+/// Offline metric combiner: policy + risk thresholds only. The production
+/// combiner (action-service) additionally forces Review on investigation
+/// conflict, degraded evidence, unverified snapshots, and learned escalation —
+/// so eval recall is a lower bound on shipped safety, and eval precision an
+/// upper bound. Keep in sync with action-service thresholds (0.5 review / 0.8 block).
 fn combine(verdict: PolicyVerdict, risk_score: f64) -> DecisionOutcome {
     match (verdict, risk_score) {
         (PolicyVerdict::Block, _) => DecisionOutcome::Block,
