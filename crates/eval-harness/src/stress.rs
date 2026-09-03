@@ -35,8 +35,16 @@ use serde::Serialize;
 /// Return/refund rate deliberately untouched (partial overlap, not erasure).
 pub fn camouflage_abusers(world: &mut dataset_gen::World, seed: u64) {
     let mut rng = StdRng::seed_from_u64(seed);
-    for (id, b) in world.behaviors.iter_mut() {
-        if world.ground_truth.get(id).copied().unwrap_or(false) {
+    // Sorted: HashMap iteration order is random per process, and the rng draws
+    // below are sequential — unsorted, each run disguises different abusers.
+    let mut ids: Vec<String> = world.behaviors.keys().cloned().collect();
+    ids.sort();
+    for id in ids {
+        let b = match world.behaviors.get_mut(&id) {
+            Some(b) => b,
+            None => continue,
+        };
+        if world.ground_truth.get(&id).copied().unwrap_or(false) {
             b.account_age_days = rng.random_range(200..1500u64);
             b.distinct_merchants = rng.random_range(3..12u32);
             b.distinct_products = rng.random_range(5..30u32);

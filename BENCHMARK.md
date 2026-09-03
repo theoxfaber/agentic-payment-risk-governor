@@ -24,11 +24,11 @@ Household false-positive check (972 legitimate customers across 3 held-out seeds
 
 ## 2. Robustness
 
-**Degradation sweep (held-out):** missing records + jitter + count noise → recall stays **100%**, review share **1.1% → 35.6% (mild) → 58.9% (heavy)**, legit flagged `0 → 0 → 14 of 1507`. Degradation correctly routes to humans.
+**Degradation sweep (held-out):** missing records + jitter + count noise → recall stays **100%**, review share **1.1% → 17.8% (mild) → 61.1% (heavy)**, legit flagged `0 → 0 → 6 of 1502`. Degradation correctly routes to humans.
 
 **Randomized worlds (140 worlds, parameters never tuned against):** investigation engine `100.0%` precision, `99.4%` recall, `0` legit customers flagged.
 
-**Camouflaged abusers (forced overlap, 12 runs, 2616 customers):** CRC budgets hold — leaked `44 vs 52` (`z=-1.16`), blocked-legit `31 vs 26` (`z=0.95`), worst-run leak `3.21%` friction `2.75%`, mean review share `36.5%`, `tau_clear` collapses `0.23 → ~0.04` (designed conservative response), mean PSI `0.98`.
+**Camouflaged abusers (forced overlap, 12 runs, 2616 customers):** CRC budgets hold — leaked `54 vs 52` (`z=0.23`), blocked-legit `31 vs 26` (`z=0.95`), worst-run leak `4.13%` friction `2.75%`, mean review share `35.5%`, `tau_clear` collapses `0.23 → ~0.04` (designed conservative response), mean PSI `0.98`.
 
 ---
 

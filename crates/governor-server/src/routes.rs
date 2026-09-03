@@ -61,6 +61,24 @@ pub(crate) async fn submit_action(
     if !context.is_object() {
         context = serde_json::json!({});
     }
+
+    // Idempotency fingerprint over CLIENT-supplied fields only — computed
+    // BEFORE the synthetic customer_id below (fresh UUID per request) so a
+    // retried POST hashes identically. Same key + different fingerprint is a
+    // client bug → 422, never a silent replay of the wrong action.
+    let idem_fingerprint = AgentActionRequest {
+        agent_id: body.agent_id.clone(),
+        merchant_id: body.merchant_id.clone(),
+        action_type: body.action_type,
+        amount: body.amount,
+        currency: body.currency.clone().unwrap_or_else(|| "INR".into()),
+        declared_intent: body.declared_intent.clone(),
+        context: context.clone(),
+        timestamp: now_utc(),
+        correlation_id: Uuid::nil(),
+    }
+    .input_hash();
+
     // Synthetic customer_id per-request UUID to avoid spurious clustering (cust_{agent_id} would link all requests from same agent via device).
     if context.get("customer_id").is_none() {
         context["customer_id"] = serde_json::Value::String(format!("cust_{}", Uuid::new_v4()));
@@ -82,8 +100,11 @@ pub(crate) async fn submit_action(
     // 400, never a 500.
     action_service::validate_request(&request).map_err(|e| ApiError::bad_request(e.to_string()))?;
 
-    // Request-level idempotency: header wins, body key is the fallback.
-    // Same key → same decision, no second money movement.
+    // Request-level idempotency with pending-claim: header wins, body key is
+    // the fallback. The claim (Pending) is inserted atomically under one lock
+    // hold BEFORE process_action runs, so two concurrent POSTs with the same
+    // key cannot both mint a decision_id and double-execute. Duplicates wait
+    // for Ready (up to 60s) and receive the original decision.
     let idem_key = headers
         .get("idempotency-key")
         .or_else(|| headers.get("x-idempotency-key"))
@@ -97,16 +118,68 @@ pub(crate) async fn submit_action(
                 .filter(|s| !s.is_empty())
         });
     if let Some(ref key) = idem_key {
-        let guard = state.idempotency.lock().await;
-        if let Some(cached_id) = guard.get(key) {
-            if let Some(cached) = state.decisions.write().expect("decisions lock").get(cached_id).cloned() {
-                return Ok(Json(cached));
+        let mut waits = 0u32;
+        loop {
+            // Atomic check-and-claim under a single lock hold.
+            let slot = {
+                let mut g = state.idempotency.lock().await;
+                match g.get(key).cloned() {
+                    None => {
+                        g.insert(key.clone(), crate::state::IdemSlot::Pending);
+                        None
+                    }
+                    some => some,
+                }
+            };
+            match slot {
+                // We own the claim — fall through to process_action.
+                None => break,
+                Some(crate::state::IdemSlot::Ready {
+                    decision_id,
+                    input_hash,
+                }) => {
+                    if input_hash != idem_fingerprint {
+                        return Err(ApiError::unprocessable(
+                            "Idempotency-Key already used for a different action".to_string(),
+                        ));
+                    }
+                    if let Some(cached) = state.decisions.write().await.get(&decision_id).cloned() {
+                        return Ok(Json(cached));
+                    }
+                    // Decision evicted from the LRU: drop the stale mapping and reclaim.
+                    let mut g = state.idempotency.lock().await;
+                    if matches!(g.get(key), Some(crate::state::IdemSlot::Ready { .. })) {
+                        g.remove(key);
+                    }
+                }
+                Some(crate::state::IdemSlot::Pending) => {
+                    if waits >= 1200 {
+                        return Err(ApiError::conflict(
+                            "duplicate request with this Idempotency-Key is still processing — retry".to_string(),
+                        ));
+                    }
+                    waits += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
             }
         }
     }
 
     let start = std::time::Instant::now();
-    let decision = state.svc.process_action(request.clone()).await?;
+    let decision = match state.svc.process_action(request.clone()).await {
+        Ok(d) => d,
+        Err(e) => {
+            // Release a claim we own so a retry can proceed (a failed decision
+            // never executed the gateway, so there is nothing to replay).
+            if let Some(ref key) = idem_key {
+                let mut g = state.idempotency.lock().await;
+                if matches!(g.get(key), Some(crate::state::IdemSlot::Pending)) {
+                    g.remove(key);
+                }
+            }
+            return Err(e.into());
+        }
+    };
     state.metrics.record_latency_ms(start.elapsed().as_secs_f64() * 1000.0);
     if let Some(insight) = &decision.learned_insight {
         state.metrics.record_learned(insight.p_hat, &insight.band);
@@ -119,10 +192,16 @@ pub(crate) async fn submit_action(
     state
         .decisions
         .write()
-        .expect("decisions lock")
+        .await
         .put(decision.decision_id, decision.clone());
     if let Some(ref key) = idem_key {
-        state.idempotency.lock().await.insert(key.clone(), decision.decision_id);
+        state.idempotency.lock().await.insert(
+            key.clone(),
+            crate::state::IdemSlot::Ready {
+                decision_id: decision.decision_id,
+                input_hash: idem_fingerprint,
+            },
+        );
     }
     if let Some(pg) = &state.pg {
         if let Err(e) = pg.upsert_decision(&decision).await {
@@ -133,7 +212,7 @@ pub(crate) async fn submit_action(
 }
 
 pub(crate) async fn list_decisions(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let map = state.decisions.read().expect("decisions lock");
+    let map = state.decisions.read().await;
     let decisions: Vec<&Decision> = map.iter().map(|(_, d)| d).collect();
     Json(serde_json::json!(decisions
         .iter()
@@ -186,10 +265,11 @@ pub(crate) async fn replay_decision(
     State(state): State<Arc<AppState>>,
     Path(decision_id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // LRU get() promotes recency and needs &mut — write lock required even for reads.
     let decision = state
         .decisions
         .write()
-        .expect("decisions lock")
+        .await
         .get(&decision_id)
         .cloned()
         .ok_or(ApiError::not_found(decision_id))?;
@@ -384,18 +464,14 @@ pub(crate) async fn approve_decision(
     // sees None (404) instead of a stale unreviewed copy — no check-then-act
     // race across the gateway await.
     let mut decision = {
-        let mut map = state.decisions.write().expect("decisions lock");
+        let mut map = state.decisions.write().await;
         map.pop(&decision_id).ok_or(ApiError::not_found(decision_id))?
     };
 
     macro_rules! restore_and {
         ($err:expr) => {{
             let err = $err;
-            state
-                .decisions
-                .write()
-                .expect("decisions lock")
-                .put(decision_id, decision);
+            state.decisions.write().await.put(decision_id, decision);
             return Err(err);
         }};
     }
@@ -481,11 +557,7 @@ pub(crate) async fn approve_decision(
         }
     }
 
-    state
-        .decisions
-        .write()
-        .expect("decisions lock")
-        .put(decision_id, decision.clone());
+    state.decisions.write().await.put(decision_id, decision.clone());
     if let Some(pg) = &state.pg {
         if let Err(e) = pg.upsert_decision(&decision).await {
             tracing::error!(decision_id = %decision_id, "reviewed decision persist failed: {e}");
@@ -514,6 +586,18 @@ impl ApiError {
     pub(crate) fn unauthorized(message: String) -> Self {
         Self {
             status: axum::http::StatusCode::UNAUTHORIZED,
+            message,
+        }
+    }
+    pub(crate) fn conflict(message: String) -> Self {
+        Self {
+            status: axum::http::StatusCode::CONFLICT,
+            message,
+        }
+    }
+    pub(crate) fn unprocessable(message: String) -> Self {
+        Self {
+            status: axum::http::StatusCode::UNPROCESSABLE_ENTITY,
             message,
         }
     }
@@ -551,6 +635,69 @@ mod tests {
     async fn submit(state: Arc<AppState>, agent: &str, amount: i64) -> Decision {
         let (hdrs, body) = submit_body(agent, amount);
         submit_action(State(state), hdrs, body).await.unwrap().0
+    }
+
+    fn keyed_body(agent: &str, amount: i64, key: &str) -> (HeaderMap, Json<SubmitAction>) {
+        let (_, body) = submit_body(agent, amount);
+        let mut hdrs = HeaderMap::new();
+        hdrs.insert("idempotency-key", key.parse().unwrap());
+        let body = body.0;
+        (
+            hdrs,
+            Json(SubmitAction {
+                idempotency_key: None,
+                ..body
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_key_processes_exactly_once() {
+        // THE request-level race: N concurrent POSTs with one Idempotency-Key
+        // must yield ONE decision_id (single process_action, single gateway
+        // execution), never N decisions.
+        let state = test_state().await;
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let st = state.clone();
+            handles.push(tokio::spawn(async move {
+                let (hdrs, body) = keyed_body("agent-trusted-01", 50_000, "key-race-1");
+                submit_action(State(st), hdrs, body).await.unwrap().0
+            }));
+        }
+        let mut ids = std::collections::HashSet::new();
+        for h in handles {
+            ids.insert(h.await.unwrap().decision_id);
+        }
+        assert_eq!(ids.len(), 1, "same key must map to one decision, got {ids:?}");
+        assert_eq!(
+            state
+                .metrics
+                .prometheus()
+                .matches("risk_governor_gateway_executions_total 1")
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn same_key_replay_returns_original_decision() {
+        let state = test_state().await;
+        let (h1, b1) = keyed_body("agent-trusted-01", 50_000, "key-replay-1");
+        let first = submit_action(State(state.clone()), h1, b1).await.unwrap().0;
+        let (h2, b2) = keyed_body("agent-trusted-01", 50_000, "key-replay-1");
+        let second = submit_action(State(state.clone()), h2, b2).await.unwrap().0;
+        assert_eq!(first.decision_id, second.decision_id);
+    }
+
+    #[tokio::test]
+    async fn key_reuse_with_different_body_is_rejected() {
+        let state = test_state().await;
+        let (h1, b1) = keyed_body("agent-trusted-01", 50_000, "key-reuse-1");
+        let _ = submit_action(State(state.clone()), h1, b1).await.unwrap();
+        let (h2, b2) = keyed_body("agent-trusted-01", 60_000, "key-reuse-1");
+        let err = submit_action(State(state.clone()), h2, b2).await.unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
@@ -719,7 +866,7 @@ mod tests {
         let resolved = state
             .decisions
             .write()
-            .expect("decisions lock")
+            .await
             .get(&decision.decision_id)
             .cloned()
             .expect("resolved decision restored");

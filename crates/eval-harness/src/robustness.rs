@@ -64,14 +64,18 @@ pub fn degrade_world(world: &dataset_gen::World, level: MessLevel, seed: u64) ->
     //    loses rows, which is exactly what an evidence-service outage looks
     //    like upstream.
     if drop_rate > 0.0 {
-        let all_ids: Vec<String> = w.behaviors.keys().cloned().collect();
+        // Sorted: choose_multiple draws sequentially, so HashMap key order
+        // would select a different victim set every run.
+        let mut all_ids: Vec<String> = w.behaviors.keys().cloned().collect();
+        all_ids.sort();
         let n_drop = (all_ids.len() as f64 * drop_rate) as usize;
         let dropped: std::collections::HashSet<String> = all_ids.choose_multiple(&mut rng, n_drop).cloned().collect();
         w.behaviors.retain(|k, _| !dropped.contains(k));
     }
 
     // 2. Timing jitter + 3. count noise on whatever survived.
-    let ids: Vec<String> = w.behaviors.keys().cloned().collect();
+    let mut ids: Vec<String> = w.behaviors.keys().cloned().collect();
+    ids.sort();
     for id in &ids {
         let b = w.behaviors.get_mut(id).unwrap();
         if jitter_h > 0.0 && !b.purchase_to_return_hours.is_empty() {

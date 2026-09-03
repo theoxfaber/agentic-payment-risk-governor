@@ -107,7 +107,6 @@ pub(crate) mod test_support {
     use razorpay_gateway::MockGateway;
     use std::collections::HashMap as Map;
     use std::num::NonZeroUsize;
-    use std::sync::RwLock;
 
     pub(crate) const TEST_KEY: &str = "rgov_test_key";
 
@@ -135,7 +134,7 @@ pub(crate) mod test_support {
             svc,
             audit: Arc::new(AuditService::new(Arc::new(AuditBackend::Mem(audit_store)))),
             gateway,
-            decisions: RwLock::new(lru::LruCache::new(NonZeroUsize::new(1_000).unwrap())),
+            decisions: tokio::sync::RwLock::new(lru::LruCache::new(NonZeroUsize::new(1_000).unwrap())),
             idempotency: tokio::sync::Mutex::new(Map::new()),
             metrics: Arc::new(Metrics::default()),
             pg: None,

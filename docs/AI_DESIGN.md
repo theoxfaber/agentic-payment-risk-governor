@@ -59,7 +59,7 @@ and PayPal risk-platform writeups:
 |---|---|
 | `return_refund_rate` | max() not sum(): returns/refunds usually describe one money event; naive summation torches precision on normal customers |
 | `log_account_age_days` | new-account + high velocity = the classic abuse signature |
-| `distinct_merchants_norm`, `distinct_products_norm` | ring members concentrate on few merchants/products |
+| `distinct_merchants_norm`, `breadth_norm` | ring members concentrate on few merchants; narrow activity breadth |
 | `dispute_ratio` | direct loss signal |
 | `sync_share_72h` | synchronized purchase→return timing — the ring tell |
 | `cluster_size_norm`, `cluster_pooled_return_rate` | structural context from the entity graph — the graph's entire value, as a number the model can weigh |
@@ -133,7 +133,7 @@ otherwise          → HUMAN REVIEW
 
 Results over 12 runs (2 616 customers, held-out headline kept separate):
 
-- **leaked 53 vs α_leak·N=52, z=0.09 — HOLDS**; worst run 4.1% leak, best 0.9%
+- **leaked 54 vs α_leak·N=52, z=0.23 — HOLDS**; worst run 4.1% leak, best 0.5%
 - **blocked-legit 31 vs α_friction·N=26, z=0.95 — HOLDS**; worst run 2.8% friction
 - tau_clear collapses 0.23→~0.04 and review share rises to ~36% — exactly the designed
   conservative response when scores overlap and uncertainty is real

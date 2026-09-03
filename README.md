@@ -229,7 +229,7 @@ curl -H 'X-API-Key: demo123' -H 'Content-Type: application/json' -d '{
 | **Investigation / Learned** | **100%** | **100%** | **₹0** | **₹2,02,950** |
 | Calibrated LR | 100% | 94% | ₹0 | ₹2,01,600 |
 
-`972` households `0` flagged; degradation `1%→59%` review; `140` random worlds `100%/99.4%`; camouflage 12 runs `z=-1.16/0.95`. Source: `cargo run --release -p eval-harness` → `docs/EVAL_REPORT_2026-08-28.md` + `BENCHMARK.md`.
+`972` households `0` flagged; degradation `1%→61%` review; `140` random worlds `100%/99.4%`; camouflage 12 runs `z=0.23/0.95`. Source: `cargo run --release -p eval-harness` → `docs/EVAL_REPORT_2026-08-28.md` + `BENCHMARK.md`.
 
 ---
 

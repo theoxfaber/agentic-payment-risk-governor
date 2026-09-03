@@ -15,11 +15,16 @@ RUN cargo build --release -p nats-link --bin policy-engine-worker --bin evidence
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates wget \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --shell /usr/sbin/nologin governor
 COPY --from=build /app/target/release/policy-engine-worker /usr/local/bin/
 COPY --from=build /app/target/release/evidence-worker /usr/local/bin/
 COPY --from=build /app/target/release/governor-server /usr/local/bin/
 COPY --from=build /app/dashboard-v2/dist /app/dashboard-v2/dist
 COPY --from=build /app/seeds /seeds
+RUN chown -R governor:governor /app /seeds
+USER governor
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD ["sh", "-c", "wget -qO- http://127.0.0.1:${PORT:-8080}/health | grep -q ok"]
 CMD ["policy-engine-worker"]

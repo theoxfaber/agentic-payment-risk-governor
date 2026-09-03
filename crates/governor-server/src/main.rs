@@ -43,8 +43,8 @@ use risk_governor_types::*;
 use state::{AppState, Metrics};
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::sync::Arc;
 use std::sync::OnceLock;
-use std::sync::{Arc, RwLock};
 
 /// The full router: public routes (dashboard/health/metrics) plus the
 /// /v1/* decision surface behind the auth middleware. Split out so tests
@@ -82,8 +82,17 @@ async fn rate_limit(State(_state): State<Arc<AppState>>, req: Request, next: Nex
     use governor::state::keyed::DashMapStateStore;
     // Liveness/dashboard/assets never count against the money-moving budget —
     // otherwise a busy server 429s its own healthcheck into a kill-loop.
+    // Webhooks are HMAC-authenticated with at-least-once Razorpay retries: sharing
+    // the per-key bucket would drop legitimate redeliveries under load, so they
+    // get their own path exemption (abuse is bounded by signature verification).
     let path = req.uri().path().to_string();
-    if path == "/health" || path == "/metrics" || path == "/" || path == "/dashboard" || path.starts_with("/assets") {
+    if path == "/health"
+        || path == "/metrics"
+        || path == "/"
+        || path == "/dashboard"
+        || path.starts_with("/assets")
+        || path.starts_with("/webhooks/")
+    {
         return next.run(req).await;
     }
     static LIMITER: OnceLock<RateLimiter<String, DashMapStateStore<String>, DefaultClock>> = OnceLock::new();
@@ -259,7 +268,7 @@ async fn main() -> anyhow::Result<()> {
         svc,
         audit: Arc::new(audit_service::AuditService::new(Arc::new(audit_backend))),
         gateway,
-        decisions: RwLock::new(decisions),
+        decisions: tokio::sync::RwLock::new(decisions),
         idempotency: tokio::sync::Mutex::new(HashMap::new()),
         metrics: Arc::new(Metrics::default()),
         pg,

@@ -26,13 +26,20 @@ use dataset_gen::World;
 use std::collections::HashMap;
 
 pub const FEATURE_NAMES: &[&str] = &[
-    "return_refund_rate",         // max(returns, refunds) / orders
-    "log_account_age_days",       // log1p(age)/10 — new accounts are the classic abuse signature
-    "distinct_merchants_norm",    // /12 — ring members concentrate on few merchants
-    "unique_customers_norm", // /30 — was distinct_products_norm, actually unique_customers_24h in serving (honest rename)
-    "dispute_ratio",         // disputes / orders
-    "sync_share_72h",        // share of purchase→return gaps under 72h (synchronized returns)
-    "cluster_size_norm",     // size of the resource-sharing cluster (/8)
+    "return_refund_rate",      // max(returns, refunds) / orders
+    "log_account_age_days",    // log1p(age)/10 — new accounts are the classic abuse signature
+    "distinct_merchants_norm", // /12 — ring members concentrate on few merchants
+    // /30 — "breadth": how widely this entity spreads activity. TRAIN source is
+    // distinct_products (per-customer order breadth, the only breadth signal in
+    // synthetic behavior data); SERVE source (action-service/learned.rs) is
+    // unique_customers_24h (per-agent velocity breadth). Same position, same
+    // /30 scale, different source distributions — the CRC thresholds are
+    // calibrated on the train distribution and live drift is monitored via the
+    // PSI export on /metrics. A future pipeline should log both and re-fit.
+    "breadth_norm",
+    "dispute_ratio",              // disputes / orders
+    "sync_share_72h",             // share of purchase→return gaps under 72h (synchronized returns)
+    "cluster_size_norm",          // size of the resource-sharing cluster (/8)
     "cluster_pooled_return_rate", // pooled rate across the cluster — the graph's entire value
 ];
 
@@ -93,11 +100,17 @@ fn behavior_features(b: &investigation_engine::CustomerBehavior, ctx: Option<&(f
 }
 
 /// Labeled samples from the given worlds (training/calibration ONLY).
+/// Customer IDs are sorted first: World.behaviors is a HashMap with random
+/// iteration order, and gradient descent is order-sensitive — without the sort
+/// every run trains slightly different weights and the report drifts.
 pub fn build_samples(worlds: &[World]) -> Vec<Sample> {
     let mut out = Vec::new();
     for world in worlds {
         let ctx = cluster_context(world);
-        for (id, b) in &world.behaviors {
+        let mut ids: Vec<&String> = world.behaviors.keys().collect();
+        ids.sort();
+        for id in ids {
+            let b = &world.behaviors[id];
             let feats = behavior_features(b, ctx.of.get(id));
             let label = if world.ground_truth.get(id).copied().unwrap_or(false) {
                 1.0

@@ -5,10 +5,20 @@ use audit_service::AuditService;
 use evidence_service::EvidenceService;
 use risk_governor_types::*;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::backends::{AuditBackend, EvidenceBackend, Gateway};
+
+/// Request-level idempotency slot. `Pending` is the claim: whoever inserts it
+/// owns the single `process_action` for this key; concurrent duplicates wait
+/// for `Ready` instead of minting a second decision_id (which would defeat
+/// gateway dedup and move money twice).
+#[derive(Debug, Clone)]
+pub(crate) enum IdemSlot {
+    Pending,
+    Ready { decision_id: Uuid, input_hash: String },
+}
 
 pub(crate) type Svc = ActionService<
     policy_engine::PolicyEngine,
@@ -27,11 +37,11 @@ pub(crate) struct AppState {
     /// from here, replay reads the immutable trail from the audit store.
     /// Bounded to MAX_CACHED_DECISIONS entries (LRU eviction); old decisions
     /// survive in Postgres. Prevents unbounded memory growth in production.
-    pub decisions: RwLock<lru::LruCache<Uuid, Decision>>,
-    /// Request-level idempotency: Idempotency-Key → decision_id. A retried
-    /// POST with the same key returns the original decision instead of
-    /// minting a fresh decision_id (which would defeat gateway dedup).
-    pub idempotency: tokio::sync::Mutex<HashMap<String, Uuid>>,
+    /// tokio RwLock: held across .await-free critical sections only, never
+    /// blocks the executor (std RwLock would).
+    pub decisions: tokio::sync::RwLock<lru::LruCache<Uuid, Decision>>,
+    /// Request-level idempotency: Idempotency-Key → claim or finished mapping.
+    pub idempotency: tokio::sync::Mutex<HashMap<String, IdemSlot>>,
     pub metrics: Arc<Metrics>,
     pub pg: Option<Arc<pg_store::PgStore>>,
     pub api_key: String,

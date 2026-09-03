@@ -35,6 +35,22 @@ pub trait LearnedScorer: Send + Sync {
     ) -> LearnedInsight;
 }
 
+/// Serving feature ORDER — must match the artifact's feature_names positionally
+/// (predict() standardizes by index). feature[3] is the train/serve analog:
+/// train (eval-harness) feeds distinct_products/30, serving feeds
+/// unique_customers_24h/30 — same "breadth" position and /30 scale, documented
+/// in eval-harness/src/learned.rs. from_embedded asserts the artifact agrees.
+const SERVE_FEATURE_NAMES: &[&str] = &[
+    "return_refund_rate",
+    "log_account_age_days",
+    "distinct_merchants_norm",
+    "breadth_norm",
+    "dispute_ratio",
+    "sync_share_72h",
+    "cluster_size_norm",
+    "cluster_pooled_return_rate",
+];
+
 pub struct DefaultLearnedScorer {
     model: Model,
     tau_clear: f64,
@@ -44,6 +60,12 @@ pub struct DefaultLearnedScorer {
 impl DefaultLearnedScorer {
     pub fn from_embedded() -> Self {
         let art: Artifact = serde_json::from_str(ARTIFACT).expect("lr_model.json parses");
+        // Loud contract: a renamed/reordered artifact must fail here, never
+        // silently skew every p_hat by feeding features to wrong weights.
+        assert_eq!(
+            art.model.feature_names, SERVE_FEATURE_NAMES,
+            "lr_model.json feature order drifted from serving extractor"
+        );
         Self {
             model: art.model,
             tau_clear: art.thresholds.tau_clear,
@@ -74,6 +96,8 @@ impl DefaultLearnedScorer {
         } else {
             (vel.unique_merchants_24h as f64 / 12.0).clamp(0.0, 1.0)
         };
+        // Serving analog of train's distinct_products/30 (see SERVE_FEATURE_NAMES):
+        // per-agent customer breadth on the same /30 scale.
         let unique_customers_norm = if vel.unique_customers_24h == 0 && vel.actions_last_24h == 0 {
             0.54
         } else {

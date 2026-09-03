@@ -141,11 +141,20 @@ impl PolicyEngine {
                 }
             }
             ActionType::Payout => {
+                if request.amount <= 0 {
+                    violated_thresholds.push(format!(
+                        "payout amount {} must be positive integer paise",
+                        request.amount
+                    ));
+                }
                 if request.amount > policy.max_payout_amount {
                     violated_thresholds.push(format!(
                         "payout amount {} exceeds max {}",
                         request.amount, policy.max_payout_amount
                     ));
+                }
+                if request.amount > policy.require_approval_above {
+                    matched_rules.push("requires_approval_above_threshold".to_string());
                 }
             }
             ActionType::PaymentLink if request.amount > policy.max_payment_link_amount => {
@@ -154,7 +163,39 @@ impl PolicyEngine {
                     request.amount, policy.max_payment_link_amount
                 ));
             }
-            _ => {}
+            ActionType::PaymentLink => {
+                if request.amount <= 0 {
+                    violated_thresholds.push(format!(
+                        "payment link amount {} must be positive integer paise",
+                        request.amount
+                    ));
+                }
+                if request.amount > policy.require_approval_above {
+                    matched_rules.push("requires_approval_above_threshold".to_string());
+                }
+            }
+            // Transfer/Capture/Void move or finalize money with no dedicated
+            // Razorpay endpoint wired in the gateway (which fails closed) — the
+            // policy plane still bounds them so a future wiring cannot pass
+            // unbounded amounts: positive paise, payout-scale cap, approval
+            // marker above the review threshold.
+            ActionType::Transfer | ActionType::Capture | ActionType::Void => {
+                if request.amount <= 0 {
+                    violated_thresholds.push(format!(
+                        "{:?} amount {} must be positive integer paise",
+                        request.action_type, request.amount
+                    ));
+                }
+                if request.amount > policy.max_payout_amount {
+                    violated_thresholds.push(format!(
+                        "{:?} amount {} exceeds max {}",
+                        request.action_type, request.amount, policy.max_payout_amount
+                    ));
+                }
+                if request.amount > policy.require_approval_above {
+                    matched_rules.push("requires_approval_above_threshold".to_string());
+                }
+            }
         }
 
         // Check velocity
@@ -166,17 +207,29 @@ impl PolicyEngine {
         }
 
         // Check country restrictions (from context) — case-insensitive
-        // ("KP" vs "kp" must not bypass a block).
-        if let Some(country) = request.context.get("country").and_then(|v| v.as_str()) {
-            let norm = country.trim().to_uppercase();
-            let blocked = policy.blocked_countries.iter().any(|c| c.trim().to_uppercase() == norm);
-            if blocked {
-                violated_thresholds.push(format!("country {} is blocked", country));
+        // ("KP" vs "kp" must not bypass a block). A missing country with ANY
+        // geo policy configured fails closed: otherwise an agent omits the
+        // field and skips every geo gate (fail-open).
+        match request.context.get("country").and_then(|v| v.as_str()) {
+            Some(country) => {
+                let norm = country.trim().to_uppercase();
+                let blocked = policy.blocked_countries.iter().any(|c| c.trim().to_uppercase() == norm);
+                if blocked {
+                    violated_thresholds.push(format!("country {} is blocked", country));
+                }
+                if !policy.allowed_countries.is_empty()
+                    && !policy.allowed_countries.iter().any(|c| c.trim().to_uppercase() == norm)
+                {
+                    violated_thresholds.push(format!("country {} not in allowed list", country));
+                }
             }
-            if !policy.allowed_countries.is_empty()
-                && !policy.allowed_countries.iter().any(|c| c.trim().to_uppercase() == norm)
-            {
-                violated_thresholds.push(format!("country {} not in allowed list", country));
+            None => {
+                if !policy.allowed_countries.is_empty() || !policy.blocked_countries.is_empty() {
+                    violated_thresholds.push(
+                        "missing country — geo restrictions configured, cannot verify jurisdiction (fail-closed)"
+                            .into(),
+                    );
+                }
             }
         }
 
@@ -512,6 +565,50 @@ mod tests {
         let r = engine().evaluate(&req, &evidence(p)).await.unwrap();
         assert_eq!(r.verdict, PolicyVerdict::Block);
         assert!(r.violated_thresholds[0].contains("not in allowed list"));
+    }
+
+    #[tokio::test]
+    async fn missing_country_fails_closed_when_geo_configured() {
+        // Omitting `country` must not skip geo gates when the merchant
+        // configures any allow/block list.
+        for lists in [(vec!["IN".to_string()], vec![]), (vec![], vec!["KP".to_string()])] {
+            let mut p = policy();
+            p.allowed_countries = lists.0;
+            p.blocked_countries = lists.1;
+            let req = request(ActionType::Refund, 10_000); // no country in ctx
+            let r = engine().evaluate(&req, &evidence(p)).await.unwrap();
+            assert_eq!(r.verdict, PolicyVerdict::Block);
+            assert!(r.violated_thresholds.iter().any(|t| t.contains("missing country")));
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_country_passes_when_no_geo_configured() {
+        let req = request(ActionType::Refund, 10_000); // no country, no lists
+        let r = engine().evaluate(&req, &evidence(policy())).await.unwrap();
+        assert_eq!(r.verdict, PolicyVerdict::Allow);
+    }
+
+    #[tokio::test]
+    async fn transfer_capture_void_are_bounded() {
+        // Previously zero-checked: over-cap Transfer/Capture/Void must Block,
+        // and large ones carry the approval marker for the combiner's Review.
+        for action in [ActionType::Transfer, ActionType::Capture, ActionType::Void] {
+            let r = engine()
+                .evaluate(&request(action, 2_000_000), &evidence(policy()))
+                .await
+                .unwrap();
+            assert_eq!(r.verdict, PolicyVerdict::Block, "{action:?} over cap must Block");
+            let r = engine()
+                .evaluate(&request(action, 150_000), &evidence(policy()))
+                .await
+                .unwrap();
+            assert!(
+                r.matched_rules
+                    .contains(&"requires_approval_above_threshold".to_string()),
+                "{action:?} above threshold must carry approval marker"
+            );
+        }
     }
 
     #[tokio::test]
