@@ -42,6 +42,14 @@ pub(crate) struct AppState {
     pub decisions: tokio::sync::RwLock<lru::LruCache<Uuid, Decision>>,
     /// Request-level idempotency: Idempotency-Key → claim or finished mapping.
     pub idempotency: tokio::sync::Mutex<HashMap<String, IdemSlot>>,
+    /// In-flight approval claims: decision_id → claim time. An approval holds
+    /// its claim across the gateway await WITHOUT removing the decision from
+    /// the map (pop-before-await loses the decision on SIGKILL mid-execute).
+    /// A crash leaves the REVIEW intact for retry; the gateway's
+    /// decision-level dedup makes that retry safe. Stale claims (>5 min,
+    /// e.g. a panicked task) are reclaimable so one bad task cannot wedge a
+    /// decision forever.
+    pub approval_claims: tokio::sync::Mutex<HashMap<Uuid, std::time::Instant>>,
     pub metrics: Arc<Metrics>,
     pub pg: Option<Arc<pg_store::PgStore>>,
     pub api_key: String,

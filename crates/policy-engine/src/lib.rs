@@ -273,15 +273,21 @@ impl PolicyEngine {
     }
 
     fn parse_paise(s: &str) -> Option<i64> {
+        // Integer paise ONLY. Decimal strings are rejected outright rather than
+        // stripped: stripping "." turns "100.50" into 10050 (right by accident)
+        // but makes "100" (₹1) and "100.00" (₹100) ambiguous inputs that must
+        // never silently mean different things. A leading "-" is allowed for
+        // negatives (rejected downstream by the positivity gates); interior
+        // "-" is malformed.
         let t = s.trim();
         if t.contains('.') {
             return None;
         }
-        let cleaned: String = t.chars().filter(|c| c.is_ascii_digit() || *c == '-').collect();
-        if cleaned.is_empty() || cleaned == "-" {
+        let body = t.strip_prefix('-').unwrap_or(t);
+        if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit()) {
             return None;
         }
-        cleaned.parse::<i64>().ok()
+        t.parse::<i64>().ok()
     }
 
     fn extract_paise(ctx: &serde_json::Value, keys: &[&str]) -> Option<i64> {
@@ -680,5 +686,20 @@ mod tests {
             .violated_thresholds
             .iter()
             .any(|t| t.contains("missing captured_paise")));
+    }
+
+    #[test]
+    fn parse_paise_accepts_plain_integers_only() {
+        assert_eq!(PolicyEngine::parse_paise("500000"), Some(500_000));
+        assert_eq!(PolicyEngine::parse_paise("  2500  "), Some(2_500));
+        assert_eq!(PolicyEngine::parse_paise("-100"), Some(-100));
+        // Decimals are rejected, never stripped: "100" (₹1) vs "100.00" (₹100)
+        // must not silently diverge.
+        assert_eq!(PolicyEngine::parse_paise("100.50"), None);
+        assert_eq!(PolicyEngine::parse_paise("100.00"), None);
+        assert_eq!(PolicyEngine::parse_paise("1,000"), None);
+        assert_eq!(PolicyEngine::parse_paise("12-34"), None);
+        assert_eq!(PolicyEngine::parse_paise(""), None);
+        assert_eq!(PolicyEngine::parse_paise("lots 500000"), None);
     }
 }

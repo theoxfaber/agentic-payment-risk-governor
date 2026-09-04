@@ -270,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
         gateway,
         decisions: tokio::sync::RwLock::new(decisions),
         idempotency: tokio::sync::Mutex::new(HashMap::new()),
+        approval_claims: tokio::sync::Mutex::new(HashMap::new()),
         metrics: Arc::new(Metrics::default()),
         pg,
         api_key: resolve_api_key(),

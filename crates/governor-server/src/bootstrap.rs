@@ -136,6 +136,7 @@ pub(crate) mod test_support {
             gateway,
             decisions: tokio::sync::RwLock::new(lru::LruCache::new(NonZeroUsize::new(1_000).unwrap())),
             idempotency: tokio::sync::Mutex::new(Map::new()),
+            approval_claims: tokio::sync::Mutex::new(Map::new()),
             metrics: Arc::new(Metrics::default()),
             pg: None,
             api_key: TEST_KEY.into(),

@@ -444,10 +444,12 @@ pub(crate) struct ApproveBody {
 /// gateway; a rejection closes it as BLOCK-with-human-context. Either way the
 /// human's identity lands in the immutable audit trail.
 ///
-/// Concurrency: the decision is CLAIMED (removed from the map) under the
-/// write lock before any await point, so two simultaneous approvers can never
-/// both pass the already-reviewed guard and double-execute the payment.
-/// The claim is restored if resolution cannot proceed.
+/// Concurrency: the decision is CLAIMED in a side set (never removed from the
+/// map) before any await point, so two simultaneous approvers can never both
+/// reach the gateway — the loser gets 409. The decision stays in the map
+/// throughout, so a crash mid-execute loses nothing: the REVIEW survives for
+/// retry, and gateway decision-dedup makes that retry safe. Stale claims
+/// (>5 min) are reclaimable.
 pub(crate) async fn approve_decision(
     State(state): State<Arc<AppState>>,
     Path(decision_id): Path<Uuid>,
@@ -460,29 +462,53 @@ pub(crate) async fn approve_decision(
         return Err(ApiError::bad_request("reviewer_id too long (max 128)".into()));
     }
 
-    // Atomic claim: remove under the write lock. A concurrent approver now
-    // sees None (404) instead of a stale unreviewed copy — no check-then-act
-    // race across the gateway await.
-    let mut decision = {
-        let mut map = state.decisions.write().await;
-        map.pop(&decision_id).ok_or(ApiError::not_found(decision_id))?
-    };
-
-    macro_rules! restore_and {
+    // Atomic claim WITHOUT popping: the decision stays in the map across the
+    // gateway await, so a SIGKILL mid-execute loses nothing — the REVIEW is
+    // still there for retry (gateway decision-dedup makes retry safe). A
+    // concurrent approver sees the claim (409), never a stale copy.
+    // Claims older than 5 minutes are treated as orphaned (panicked task) and
+    // may be reclaimed.
+    {
+        let mut claims = state.approval_claims.lock().await;
+        const CLAIM_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+        let fresh = claims
+            .get(&decision_id)
+            .map(|t| t.elapsed() < CLAIM_TTL)
+            .unwrap_or(false);
+        if fresh {
+            return Err(ApiError::conflict(format!(
+                "decision {decision_id} is already being resolved by another reviewer — retry"
+            )));
+        }
+        claims.insert(decision_id, std::time::Instant::now());
+    }
+    macro_rules! release_and {
         ($err:expr) => {{
             let err = $err;
-            state.decisions.write().await.put(decision_id, decision);
+            state.approval_claims.lock().await.remove(&decision_id);
             return Err(err);
         }};
     }
 
+    let mut decision = {
+        // peek(): no recency promotion, so a shared read lock suffices here.
+        let map = state.decisions.read().await;
+        match map.peek(&decision_id).cloned() {
+            Some(d) => d,
+            None => {
+                drop(map);
+                release_and!(ApiError::not_found(decision_id));
+            }
+        }
+    };
+
     if decision.human_review.is_some() {
-        restore_and!(ApiError::bad_request(format!(
+        release_and!(ApiError::bad_request(format!(
             "decision {decision_id} already reviewed"
         )));
     }
     if decision.decision != DecisionOutcome::Review {
-        restore_and!(ApiError::bad_request(format!(
+        release_and!(ApiError::bad_request(format!(
             "decision {decision_id} is {:?}, not review — nothing to resolve",
             decision.decision
         )));
@@ -528,9 +554,9 @@ pub(crate) async fn approve_decision(
                     .await;
             }
             Err(e) => {
-                // Money did NOT move (gateway errored). Restore the decision
-                // UNRESOLVED so a reviewer can retry, and record the failed
-                // attempt so replay shows why.
+                // Money did NOT move (gateway errored). The decision was never
+                // removed, so just clear the review, persist the unresolved
+                // state, release the claim, and let a reviewer retry.
                 decision.human_review = None;
                 state
                     .audit
@@ -545,14 +571,14 @@ pub(crate) async fn approve_decision(
                         }),
                     )
                     .await;
-                // Sync the unresolved state back to Postgres before restoring
-                // to the in-memory map, preventing memory/DB desync.
+                // Sync the unresolved state back to Postgres, preserving the
+                // memory/DB invariant that the map always reflects the latest.
                 if let Some(pg) = &state.pg {
                     if let Err(pe) = pg.upsert_decision(&decision).await {
                         tracing::error!(decision_id = %decision_id, "failed to persist unresolved decision: {pe}");
                     }
                 }
-                restore_and!(ApiError::internal(format!("gateway execution failed: {e}")));
+                release_and!(ApiError::internal(format!("gateway execution failed: {e}")));
             }
         }
     }
@@ -563,6 +589,7 @@ pub(crate) async fn approve_decision(
             tracing::error!(decision_id = %decision_id, "reviewed decision persist failed: {e}");
         }
     }
+    state.approval_claims.lock().await.remove(&decision_id);
     Ok(Json(decision))
 }
 
